@@ -7,3 +7,9 @@ case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
+if command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init bash)"
+fi
+if command -v fzf >/dev/null 2>&1; then
+    eval "$(fzf --bash)"
+fi
