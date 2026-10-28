@@ -1,7 +1,7 @@
 pkgbase=frankenstein
 pkgname=('frankenstein-core' 'frankenstein-openbox')
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Arch-native foundation with explicit user profiles and file rollback'
 arch=('any')
 url='https://github.com/Asyraf2003/frankenstein'
@@ -17,6 +17,8 @@ check() {
 package_frankenstein-core() {
     depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
     optdepends=('sudo: privileged package and radio actions'
+                'zoxide: optional interactive shell directory navigation'
+                'fzf: optional interactive shell completion and key bindings'
                 'polkit: native authorization for unprivileged power and network actions'
                 'networkmanager: Wi-Fi controls'
                 'bluez: native Bluetooth service'
