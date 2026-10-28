@@ -1,0 +1,5 @@
+#!/bin/sh
+# Adapted from the MIT-licensed shared desktop startup; no hardware policy.
+dbus-update-activation-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE
+xsetroot -solid '#20242b'
+dunst &

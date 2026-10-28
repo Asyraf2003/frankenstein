@@ -11,9 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
-      - run: bash -n bootstrap bin/frankenstein tests/*.sh
+      - run: for file in bootstrap bin/* tests/*.sh; do bash -n "$file"; done
   arch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash tests/container.sh
+  openbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/container.sh openbox

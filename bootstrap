@@ -2,18 +2,20 @@
 set -euo pipefail
 usage() {
     cat <<'HELP'
-Usage: ./bootstrap core
+Usage: ./bootstrap core|openbox
 Build and install the local Frankenstein package on an existing Arch Linux system.
 Run as an ordinary user with sudo. Requires git and base-devel already installed.
 The build runs tests before pacman installs the package. Full pacman -Syu happens
 first; package prompts remain interactive. Existing config and service state are
 not changed. Then use: frankenstein profile apply shell
+The optional openbox selection also installs the X11 desktop and audio packages.
+Use: frankenstein profile apply openbox; then startx from a local TTY.
 This is not a disk partitioner or a bootloader/OS installer.
 HELP
 }
 case "${1:---help}" in
     -h|--help) usage; exit 0 ;;
-    core) [[ $# == 1 ]] || { usage >&2; exit 2; } ;;
+    core|openbox) [[ $# == 1 ]] || { usage >&2; exit 2; } ;;
     *) usage >&2; exit 2 ;;
 esac
 [[ -f /etc/arch-release ]] || { echo 'ERROR: Arch Linux required' >&2; exit 2; }
@@ -26,10 +28,15 @@ sudo pacman -Syu --needed base-devel python
 build=$(mktemp -d "${TMPDIR:-/tmp}/frankenstein-build.XXXXXXXX")
 # Preserve the build directory and packages for inspection or native pacman -U.
 printf 'BUILD_DIRECTORY=%s\n' "$build"
-cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/tests" "$root/packaging" "$root/licenses" "$root/LICENSE" "$build/"
+cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" "$root/packaging" "$root/licenses" "$root/LICENSE" "$build/"
 cd -- "$build/packaging"
 makepkg --syncdeps --cleanbuild
-mapfile -t packages < <(makepkg --packagelist)
+packages=()
+while IFS= read -r package; do
+    if [[ $1 == openbox || ${package##*/} == frankenstein-core-* ]]; then
+        packages+=("$package")
+    fi
+done < <(makepkg --packagelist)
 (( ${#packages[@]} > 0 )) || exit 1
 sudo pacman -U -- "${packages[@]}"
 printf '%s\n' 'Installed. Inspect frankenstein --help; profiles and services require explicit actions.'

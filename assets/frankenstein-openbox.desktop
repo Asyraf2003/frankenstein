@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Frankenstein Openbox
+Comment=Optional X11 desktop profile
+Exec=frankenstein-openbox
+TryExec=frankenstein-openbox
+Type=Application
+DesktopNames=Openbox;

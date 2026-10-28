@@ -1,7 +1,7 @@
 pkgbase=frankenstein
-pkgname=('frankenstein-core')
+pkgname=('frankenstein-core' 'frankenstein-openbox')
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Arch-native foundation with explicit user profiles and file rollback'
 arch=('any')
 url='https://github.com/Asyraf2003/frankenstein'
@@ -17,6 +17,7 @@ check() {
 package_frankenstein-core() {
     depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
     optdepends=('sudo: privileged package and radio actions'
+                'polkit: native authorization for unprivileged power and network actions'
                 'networkmanager: Wi-Fi controls'
                 'bluez: native Bluetooth service'
                 'bluez-utils: Bluetooth controls')
@@ -27,6 +28,24 @@ package_frankenstein-core() {
     for asset in profiles/shell/*; do
         install -Dm644 "$asset" "$pkgdir/usr/share/frankenstein/$asset"
     done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 licenses/upstream-MIT "$pkgdir/usr/share/licenses/$pkgname/upstream-MIT"
+}
+
+package_frankenstein-openbox() {
+    pkgdesc='Optional reusable Openbox/X11 desktop profile for Frankenstein'
+    depends=('frankenstein-core' 'openbox' 'xorg-server' 'xorg-xinit'
+             'xorg-xsetroot' 'dbus' 'python-pyxdg' 'xterm' 'thunar' 'rofi'
+             'dunst' 'ttf-dejavu' 'playerctl' 'pipewire' 'pipewire-pulse' 'wireplumber')
+    cd "$startdir/.."
+    for command in frankenstein-openbox vol mic; do
+        install -Dm755 "bin/$command" "$pkgdir/usr/bin/$command"
+    done
+    for asset in profiles/openbox/*; do
+        install -Dm644 "$asset" "$pkgdir/usr/share/frankenstein/$asset"
+    done
+    chmod 755 "$pkgdir/usr/share/frankenstein/profiles/openbox/"{xinitrc,autostart}
+    install -Dm644 assets/frankenstein-openbox.desktop "$pkgdir/usr/share/xsessions/frankenstein-openbox.desktop"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 licenses/upstream-MIT "$pkgdir/usr/share/licenses/$pkgname/upstream-MIT"
 }

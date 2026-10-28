@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Adapted from the upstream MIT-licensed TTY/Openbox session entrypoint.
+set -euo pipefail
+if [[ ${1:-} == --help ]]; then
+    echo 'Usage: frankenstein-openbox (from X11 or a display manager)'
+    echo 'Apply the openbox profile first; use startx from a local TTY.'
+    exit 0
+fi
+(( $# == 0 )) || exit 2
+[[ -n ${DISPLAY:-} ]] || { echo 'ERROR: an X11 display is required' >&2; exit 2; }
+[[ -f $HOME/.config/openbox/rc.xml ]] || {
+    echo 'ERROR: apply the openbox profile before starting a session' >&2
+    exit 2
+}
+export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=Openbox
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then
+    exec dbus-run-session -- openbox-session
+fi
+exec openbox-session
