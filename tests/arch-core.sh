@@ -11,6 +11,12 @@ chown -R builder:builder /build
 runuser -u builder -- bash -c 'cd /build && printf "\n\n\n\n" | ./bootstrap core'
 pacman -Qkk frankenstein-core
 frankenstein --help
+frankenstein packages status
+runuser -u builder -- bash -c 'printf "\n" | frankenstein packages install tree'
+tree --version
+runuser -u builder -- bash -c 'printf "\n" | frankenstein packages remove tree'
+if pacman -Q tree; then echo 'package removal failed' >&2; exit 1; fi
+if pacman -Q frankenstein-openbox; then echo 'core pulled in the desktop' >&2; exit 1; fi
 useradd -m -s /bin/bash tester
 runuser -u tester -- frankenstein profile status
 runuser -u tester -- frankenstein profile apply shell --replace
