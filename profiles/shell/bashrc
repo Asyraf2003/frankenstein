@@ -1,0 +1,9 @@
+# Adapted from MIT-licensed shell configuration, Copyright (c) 2026 Asyraf.
+[[ $- != *i* ]] && return
+PS1='[\u@\h \W]\$ '
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac

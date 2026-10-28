@@ -1,0 +1,7 @@
+{
+  "files": {
+    "bashrc": ".bashrc",
+    "bash_profile": ".bash_profile"
+  },
+  "commands": ["bash", "ls", "grep"]
+}

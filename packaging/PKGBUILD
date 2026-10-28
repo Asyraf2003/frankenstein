@@ -1,0 +1,32 @@
+pkgbase=frankenstein
+pkgname=('frankenstein-core')
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Arch-native foundation with explicit user profiles and file rollback'
+arch=('any')
+url='https://github.com/Asyraf2003/frankenstein'
+license=('AGPL-3.0-only' 'MIT')
+options=('!debug')
+source=()
+sha256sums=()
+
+check() {
+    PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s "$startdir/../tests" -p 'test_*.py'
+}
+
+package_frankenstein-core() {
+    depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
+    optdepends=('sudo: privileged package and radio actions'
+                'networkmanager: Wi-Fi controls'
+                'bluez: native Bluetooth service'
+                'bluez-utils: Bluetooth controls')
+    cd "$startdir/.."
+    install -Dm755 bin/frankenstein "$pkgdir/usr/bin/frankenstein"
+    install -Dm644 lib/control.py "$pkgdir/usr/lib/frankenstein/control.py"
+    install -Dm644 lib/profiles.py "$pkgdir/usr/lib/frankenstein/profiles.py"
+    for asset in profiles/shell/*; do
+        install -Dm644 "$asset" "$pkgdir/usr/share/frankenstein/$asset"
+    done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 licenses/upstream-MIT "$pkgdir/usr/share/licenses/$pkgname/upstream-MIT"
+}
