@@ -1,0 +1,9 @@
+{
+  "files": {
+    "xinitrc": ".xinitrc",
+    "autostart": ".config/openbox/autostart",
+    "rc.xml": ".config/openbox/rc.xml",
+    "menu.xml": ".config/openbox/menu.xml"
+  },
+  "commands": ["frankenstein-openbox", "openbox-session", "dbus-run-session", "dbus-update-activation-environment", "xsetroot", "dunst", "xterm", "thunar", "rofi", "wpctl", "playerctl"]
+}
