@@ -127,6 +127,34 @@ class ProfileTransactions(unittest.TestCase):
         self.assertEqual(result.stdout, '/usr/bin:/bin')
         self.assertNotIn('ssh-agent', shell.read_text())
 
+    def test_optional_shell_integrations_are_interactive_and_provider_guarded(self):
+        import shutil
+        import subprocess
+        tools = self.root/'tools'
+        tools.mkdir()
+        bash = shutil.which('bash')
+        shell = ROOT/'profiles/shell/bashrc'
+        log = self.root/'calls'
+        env = {'PATH': str(tools), 'HOME': str(self.home), 'CALLS': str(log), 'TERM': 'dumb'}
+        def invoke(interactive):
+            return subprocess.run([bash, '--noprofile', '--norc', '-ic' if interactive else '-c',
+                                   'source "$1"; printf "%s:%s" "${ZOXIDE_READY:-absent}" "${FZF_READY:-absent}"',
+                                   'test', str(shell)], env=env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(invoke(True).stdout, 'absent:absent')
+        for name, argument, marker in (('zoxide', 'init bash', 'ZOXIDE_READY'), ('fzf', '--bash', 'FZF_READY')):
+            provider = tools/name
+            provider.write_text('#!/bin/sh\n' +
+                                'test "$*" = "'+argument+'" || exit 99\n' +
+                                'printf "%s\\n" "'+name+'" >> "$CALLS"\n' +
+                                'printf "%s\\n" "export '+marker+'=ready"\n')
+            provider.chmod(0o755)
+        self.assertEqual(invoke(False).stdout, 'absent:absent')
+        self.assertFalse(log.exists())
+        result = invoke(True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'ready:ready')
+        self.assertEqual(log.read_text().splitlines(), ['zoxide', 'fzf'])
+
 
 if __name__ == '__main__':
     unittest.main()

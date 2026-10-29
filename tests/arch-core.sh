@@ -22,6 +22,8 @@ runuser -u tester -- frankenstein profile status
 runuser -u tester -- frankenstein profile apply shell --replace
 runuser -u tester -- frankenstein profile verify
 runuser -u tester -- bash --noprofile --norc -ic 'source ~/.bashrc; command -v frankenstein; [[ $PS1 == *"\\u@\\h"* ]]'
+pacman -S --noconfirm --needed zoxide fzf
+runuser -u tester -- bash --noprofile --norc -ic 'source ~/.bashrc && declare -F z && declare -F fzf-file-widget && declare -F _fzf_complete'
 runuser -u tester -- frankenstein profile rollback
 runuser -u tester -- frankenstein profile verify
 # Native providers must fail honestly without a system bus; never power the host.
