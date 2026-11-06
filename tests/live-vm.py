@@ -155,12 +155,9 @@ def main():
         # Exercise the separately installed recovery kernel, rather than treating
         # the existence of its boot files as proof of a working recovery path.
         # Split the marker in the shell command so command echo cannot match it.
-        vm.child.sendline("sudo -k -p 'RECOVERY_''SUDO:' sh -c \"sed -i 's/^default .*/default frankenstein-lts.conf/' /boot/loader/loader.conf\"")
+        vm.child.sendline("sudo -k -p 'RECOVERY_''SUDO:' sh -ec \"sed -i 's/^default .*/default frankenstein-lts.conf/' /boot/loader/loader.conf; grep -qx 'default frankenstein-lts.conf' /boot/loader/loader.conf; sync; systemctl poweroff\"")
         vm.child.expect_exact('RECOVERY_SUDO:')
         vm.child.sendline(SECRET)
-        vm.child.expect(r'\$ ')
-        vm.command("sudo -n grep -qx 'default frankenstein-lts.conf' /boot/loader/loader.conf")
-        vm.child.sendline('sudo -n poweroff')
         vm.child.expect(pexpect.EOF, timeout=120)
         vm.stop()
         vm.start()
