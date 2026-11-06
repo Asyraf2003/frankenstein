@@ -1,7 +1,7 @@
 pkgbase=frankenstein
 pkgname=('frankenstein-core' 'frankenstein-openbox')
-pkgver=0.1.0
-pkgrel=3
+pkgver=0.2.0
+pkgrel=1
 pkgdesc='Arch-native foundation with explicit user profiles and file rollback'
 arch=('any')
 url='https://github.com/Asyraf2003/frankenstein'
@@ -27,6 +27,8 @@ package_frankenstein-core() {
     install -Dm755 bin/frankenstein "$pkgdir/usr/bin/frankenstein"
     install -Dm644 lib/control.py "$pkgdir/usr/lib/frankenstein/control.py"
     install -Dm644 lib/profiles.py "$pkgdir/usr/lib/frankenstein/profiles.py"
+    install -Dm644 lib/first_boot.py "$pkgdir/usr/lib/frankenstein/first_boot.py"
+    install -Dm644 assets/frankenstein-first-boot.service "$pkgdir/usr/lib/systemd/system/frankenstein-first-boot.service"
     for asset in profiles/shell/*; do
         install -Dm644 "$asset" "$pkgdir/usr/share/frankenstein/$asset"
     done
@@ -43,6 +45,8 @@ package_frankenstein-openbox() {
     for command in frankenstein-openbox vol mic; do
         install -Dm755 "bin/$command" "$pkgdir/usr/bin/$command"
     done
+    install -Dm755 bin/frankenstein-welcome "$pkgdir/usr/bin/frankenstein-welcome"
+    install -Dm644 lib/welcome.py "$pkgdir/usr/lib/frankenstein/welcome.py"
     for asset in profiles/openbox/*; do
         install -Dm644 "$asset" "$pkgdir/usr/share/frankenstein/$asset"
     done

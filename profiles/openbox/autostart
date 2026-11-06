@@ -3,3 +3,6 @@
 dbus-update-activation-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE
 xsetroot -solid '#20242b'
 dunst &
+if [ -f /etc/frankenstein/install.json ]; then
+    xterm -T 'Welcome to Frankenstein' -e frankenstein-welcome &
+fi
