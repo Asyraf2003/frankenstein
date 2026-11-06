@@ -101,6 +101,9 @@ class Installer(unittest.TestCase):
         calls = []
         def run(*args, **kwargs):
             calls.append(args[0])
+            if args[0] == 'mkfs.ext4':
+                self.assertEqual(args, ('mkfs.ext4', '-F', '-L', 'frankenstein',
+                                        '/dev/mapper/frankenstein-root'))
             if args[0] == 'pacstrap':
                 raise installer.Error('download interrupted')
             return ''
