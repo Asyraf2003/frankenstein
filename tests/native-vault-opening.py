@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'vault'))
 import recovery_kit as kit
 import recovery_opening as opening
+import backup
 
 SCRIPT = ROOT / 'vault/recovery_opening.py'
 
@@ -81,6 +82,12 @@ def tty(args, answers, timeout=40):
 
 
 class NativeOpening(unittest.TestCase):
+    def test_backup_rejects_public_repository_before_reading_secrets(self):
+        with patch.object(backup, 'command', return_value=json.dumps({
+                'private': False, 'full_name': 'example/state', 'default_branch': 'main'})):
+            with self.assertRaisesRegex(kit.KitError, 'PRIVATE_REPOSITORY_REQUIRED'):
+                backup.publish('example/state', None, None, None, None, None)
+
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix='native-opening-proof-')
@@ -146,6 +153,38 @@ class NativeOpening(unittest.TestCase):
         self.assertEqual(supplied, 1)
         self.assertIn(b'KIT_RESTORE=VERIFIED', output)
         self.assertEqual((restored / 'projects/dummy.txt').read_text(), 'dummy envelope seam only\n')
+        # Real Git transport against a disposable bare remote. GitHub metadata is
+        # the only substituted boundary; encryption, commits, push and restore are native.
+        remote = self.case / 'remote.git'
+        seed = self.case / 'seed'
+        def git(*args):
+            subprocess.run(['git', *map(str, args)], check=True, capture_output=True)
+        git('init', '--bare', '--initial-branch=main', remote)
+        git('clone', remote, seed)
+        (seed / 'unrelated.txt').write_text('preserve existing user state')
+        git('-C', seed, 'add', 'unrelated.txt')
+        git('-C', seed, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost',
+            'commit', '-m', 'fixture')
+        git('-C', seed, 'push', 'origin', 'main')
+        driver = ('import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+                  'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                  'digest=backup.publish("fixture/state",Path(sys.argv[3]),Path(sys.argv[4]),'
+                  'json.loads(Path(sys.argv[5]).read_text()),Path(sys.argv[6]),sys.argv[7]);'
+                  'backup.restore("fixture/state",digest,Path(sys.argv[8]));print("GIT_RECOVERY=PASS")')
+        git_restored = self.case / 'git-restored'
+        code, output, supplied = tty(['-c', driver, ROOT / 'vault', remote, archive,
+            self.folder / 'identity.age', context_file, self.folder, self.expected, git_restored],
+            [self.secret] * 3)
+        self.assertEqual(code, 0, 'native Git recovery failed; transcript withheld')
+        self.assertEqual(supplied, 3)
+        self.assertIn(b'GIT_RECOVERY=PASS', output)
+        self.assertEqual((git_restored / 'projects/dummy.txt').read_text(), 'dummy envelope seam only\n')
+        git('-C', seed, 'pull', '--ff-only')
+        self.assertEqual((seed / 'unrelated.txt').read_text(), 'preserve existing user state')
+        for path in (seed / 'frankenstein').rglob('*'):
+            if path.is_file():
+                self.assertNotIn(b'AGE-SECRET-KEY-', path.read_bytes())
+                self.assertNotIn(b'dummy envelope seam only', path.read_bytes())
 
     def test_copy_uses_native_verify_and_public_recipient_without_secret_entry(self):
         code, output, _ = tty([SCRIPT, 'verify', '--opening', self.folder,
