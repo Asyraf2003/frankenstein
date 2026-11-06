@@ -123,6 +123,10 @@ def context(value):
 
 def outside_git(path):
     path = safe(path).resolve()
+    # A linked worktree may have a Windows-form gitdir pointer when accessed
+    # from WSL. Never interpret git's inability to resolve it as a safe output.
+    require(not any((parent / '.git').exists() for parent in (path, *path.parents)),
+            'OUTPUTS_MUST_BE_OUTSIDE_GIT')
     # Refuse ordinary repositories, linked worktrees and bare repositories.
     existing = path if path.is_dir() else path.parent
     while not existing.exists():
