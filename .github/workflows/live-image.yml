@@ -6,6 +6,7 @@ on:
       - 'packaging/**'
       - 'lib/first_boot.py'
       - 'tests/test_installer.py'
+      - 'tests/live-vm.py'
       - '.github/workflows/live-image.yml'
   workflow_dispatch:
 permissions:

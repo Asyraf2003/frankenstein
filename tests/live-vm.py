@@ -152,12 +152,34 @@ def main():
         vm.command("for i in $(seq 1 60); do DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority wmctrl -m 2>/dev/null | grep -q Openbox && break; sleep 1; done; DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority wmctrl -m | grep Openbox", timeout=90)
         vm.command('DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority frankenstein-welcome </dev/null')
         vm.qmp('screendump', {'filename': str(state / 'welcome.ppm')})
+        # Exercise the separately installed recovery kernel, rather than treating
+        # the existence of its boot files as proof of a working recovery path.
+        # Split the marker in the shell command so command echo cannot match it.
+        vm.child.sendline("sudo -k -p 'RECOVERY_''SUDO:' sh -c \"sed -i 's/^default .*/default frankenstein-lts.conf/' /boot/loader/loader.conf\"")
+        vm.child.expect_exact('RECOVERY_SUDO:')
+        vm.child.sendline(SECRET)
+        vm.child.expect(r'\$ ')
+        vm.command("sudo -n grep -qx 'default frankenstein-lts.conf' /boot/loader/loader.conf")
+        vm.child.sendline('sudo -n poweroff')
+        vm.child.expect(pexpect.EOF, timeout=120)
+        vm.stop()
+        vm.start()
+        vm.child.expect(r'(?i)passphrase.*:', timeout=300)
+        vm.child.sendline(SECRET)
+        vm.child.expect(r'login:', timeout=300)
+        vm.child.sendline('proof')
+        vm.child.expect_exact('Password:')
+        vm.child.sendline(SECRET)
+        vm.child.expect(r'\$ ')
+        vm.command("uname -r | grep -E -- '-lts$'")
+        vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
         with iso.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         (state / 'proof.json').write_text(json.dumps({'result': 'PASS', 'iso_sha256': digest,
             'memory_mib': 4096, 'checks': ['live UEFI boot', 'blank disk install', 'LUKS unlock',
-            'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome'],
-            'not_verified': ['LTS recovery boot', 'physical hardware', 'USB pairing', 'vault']}, indent=2) + '\n')
+            'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome',
+            'LTS recovery boot', 'LTS LUKS unlock and PAM login', 'LTS first-boot verification'],
+            'not_verified': ['physical hardware', 'USB pairing', 'vault', 'generation rollback']}, indent=2) + '\n')
         print('CLEAN_DISK_VM_PROOF=PASS')
     except Exception:
         if vm.log:
