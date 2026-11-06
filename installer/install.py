@@ -157,7 +157,9 @@ def install(node, config, password, luks_secret, manifest):
         run('cryptsetup', 'luksFormat', '--type', 'luks2', '--batch-mode', '--key-file', '-', root, secret=luks_secret)
         run('cryptsetup', 'open', '--key-file', '-', root, MAPPER, secret=luks_secret)
         opened = True
-        run('mkfs.ext4', '-L', 'frankenstein', '/dev/mapper/' + MAPPER)
+        # New LUKS plaintext is pseudorandom until written and can resemble an old
+        # signature. Disk approval already authorizes this freshly opened mapper.
+        run('mkfs.ext4', '-F', '-L', 'frankenstein', '/dev/mapper/' + MAPPER)
         TARGET.mkdir(parents=True, exist_ok=True)
         run('mount', '/dev/mapper/' + MAPPER, TARGET)
         mounted = True
