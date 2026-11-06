@@ -167,7 +167,7 @@ class NativeOpening(unittest.TestCase):
             'commit', '-m', 'fixture')
         git('-C', seed, 'push', 'origin', 'main')
         driver = ('import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
-                  'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                  'import backup;backup.repository=lambda name,branch=None:(sys.argv[2],"main");'
                   'digest=backup.publish("fixture/state",Path(sys.argv[3]),Path(sys.argv[4]),'
                   'json.loads(Path(sys.argv[5]).read_text()),Path(sys.argv[6]),sys.argv[7]);'
                   'backup.restore("fixture/state",digest,Path(sys.argv[8]));print("GIT_RECOVERY=PASS")')
@@ -181,6 +181,11 @@ class NativeOpening(unittest.TestCase):
         self.assertEqual((git_restored / 'projects/dummy.txt').read_text(), 'dummy envelope seam only\n')
         git('-C', seed, 'pull', '--ff-only')
         self.assertEqual((seed / 'unrelated.txt').read_text(), 'preserve existing user state')
+        sparse = self.case / 'sparse-read'
+        backup.checkout_backup(str(remote), 'main', sparse)
+        self.assertFalse((sparse / 'unrelated.txt').exists())
+        self.assertTrue((sparse / 'frankenstein/backups').is_dir())
+        self.assertEqual({p.name for p in sparse.iterdir()}, {'.git', 'frankenstein'})
         for path in (seed / 'frankenstein').rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'AGE-SECRET-KEY-', path.read_bytes())
@@ -188,7 +193,7 @@ class NativeOpening(unittest.TestCase):
         local_identity = self.case / 'device-key.txt'
         subprocess.run(['age-keygen', '--output', str(local_identity)], check=True, capture_output=True)
         routine = ('import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
-                   'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                   'import backup;backup.repository=lambda name,branch=None:(sys.argv[2],"main");'
                    'print(backup.capture("fixture/state",Path(sys.argv[3]),Path(sys.argv[4]),'
                    'json.loads(Path(sys.argv[5]).read_text()),Path(sys.argv[6]),sys.argv[7]))')
         result = subprocess.run([sys.executable, '-c', routine, str(ROOT / 'vault'), str(remote),
@@ -202,7 +207,7 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 import backup
 import recovery_kit as kit
-backup.repository=lambda name:(sys.argv[2],"main")
+backup.repository=lambda name,branch=None:(sys.argv[2],"main")
 original=backup.command
 competing=[]
 def command(args,cwd=None):
@@ -235,7 +240,7 @@ else:
         local_identity.unlink()
         recovered_again = self.case / 'routine-backup-recovered'
         recover = ('import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
-                   'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                   'import backup;backup.repository=lambda name,branch=None:(sys.argv[2],"main");'
                    'backup.restore("fixture/state",sys.argv[3],Path(sys.argv[4]));print("RECOVERED")')
         code, output, supplied = tty(['-c', recover, ROOT / 'vault', remote, digest, recovered_again],
                                     [self.secret])
@@ -286,6 +291,11 @@ else:
         subprocess.run(['git', 'init', '-q', str(repo)], check=True, capture_output=True)
         with self.assertRaisesRegex(kit.KitError, 'OUTSIDE_GIT'):
             opening.enroll(repo / 'opening')
+        cross_platform = self.case / 'windows-worktree'
+        cross_platform.mkdir()
+        (cross_platform / '.git').write_text('gitdir: C:/workspace/source/.git/worktrees/linked\n')
+        with self.assertRaisesRegex(kit.KitError, 'OUTSIDE_GIT'):
+            opening.enroll(cross_platform / 'opening')
         link = self.case / 'link'
         link.symlink_to(self.folder, target_is_directory=True)
         with self.assertRaisesRegex(kit.KitError, 'PATH_CONFLICT'):

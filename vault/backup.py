@@ -21,31 +21,41 @@ def command(args, cwd=None):
     return result.stdout.strip()
 
 
-def repository(name):
+def repository(name, selected_branch=None):
     kit.require(isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', name),
                 'PRIVATE_REPOSITORY_INVALID')
     value = json.loads(command(['gh', 'api', 'repos/' + name]))
     kit.require(value.get('private') is True and value.get('full_name', '').lower() == name.lower(),
                 'PRIVATE_REPOSITORY_REQUIRED')
-    branch = value.get('default_branch')
+    branch = value.get('default_branch') if selected_branch is None else selected_branch
     kit.require(isinstance(branch, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9/_.-]*', branch),
                 'PRIVATE_BRANCH_INVALID')
+    command(['git', 'check-ref-format', '--branch', branch])
     return 'https://github.com/' + name + '.git', branch
 
 
-def publish(repo, candidate, identity, context, capsule, capsule_digest):
+def checkout_backup(url, branch, destination):
+    """Do not materialize unrelated legacy secrets from the user's private repo."""
+    command(['git', 'clone', '--quiet', '--filter=blob:none', '--no-checkout', '--depth=1',
+             '--single-branch', '--branch', branch, '--', url, str(destination)])
+    # Non-cone mode omits root files as well as unrelated directories.
+    command(['git', 'sparse-checkout', 'set', '--no-cone', '/frankenstein/backups/'], destination)
+    command(['git', 'checkout', '--quiet', branch], destination)
+
+
+def publish(repo, candidate, identity, context, capsule, capsule_digest, branch=None):
     """Validate a stable copy before cloning; preserve all unrelated private repo files."""
-    return _publish(repo, candidate, identity, context, capsule, capsule_digest, True)
+    return _publish(repo, candidate, identity, context, capsule, capsule_digest, True, branch)
 
 
-def capture(repo, staging, identity, context, capsule, capsule_digest):
+def capture(repo, staging, identity, context, capsule, capsule_digest, branch=None):
     """Routine backup from trusted local identity; recovery passphrase is not requested.
 
     The selected capsule must have been verified during initial enrollment. This
     producer supplies its pinned recipient directly to native age for EVERY backup.
     Arbitrary imported ciphertext still goes through publish's emergency-key proof.
     """
-    repository(repo)
+    repository(repo, branch)
     staging = kit.outside_git(staging)
     recovery = opening.inspect(capsule, capsule_digest)
     local_recipient = opening.native(['age-keygen', '-y', str(kit.safe(identity))]).decode().strip()
@@ -53,11 +63,11 @@ def capture(repo, staging, identity, context, capsule, capsule_digest):
     with tempfile.TemporaryDirectory(prefix='frankenstein-capture-') as temporary:
         candidate = Path(temporary) / 'vault.age'
         kit.create(staging, context, [local_recipient, recovery['recipient']], candidate)
-        return _publish(repo, candidate, identity, context, capsule, capsule_digest, False)
+        return _publish(repo, candidate, identity, context, capsule, capsule_digest, False, branch)
 
 
-def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify_emergency):
-    url, branch = repository(repo)
+def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify_emergency, branch=None):
+    url, branch = repository(repo, branch)
     with tempfile.TemporaryDirectory(prefix='frankenstein-private-backup-') as temporary:
         root = Path(temporary)
         staged = root / 'ciphertext'
@@ -80,8 +90,7 @@ def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify
                     'context': kit.context(context), 'recovery_manifest_sha256': capsule_digest}
         (staged / 'backup.json').write_bytes(kit.encoded(manifest))
         checkout = root / 'repository'
-        command(['git', 'clone', '--quiet', '--depth=1', '--single-branch', '--branch', branch,
-                 '--', url, str(checkout)])
+        checkout_backup(url, branch, checkout)
         parent = command(['git', 'rev-parse', 'HEAD'], checkout)
         directory = checkout / 'frankenstein' / 'backups' / proof['archive_sha256']
         kit.safe(directory)
@@ -100,16 +109,15 @@ def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify
         return proof['archive_sha256']
 
 
-def restore(repo, digest, destination):
+def restore(repo, digest, destination, branch=None):
     """All-device-loss path: GitHub access plus externally held recovery passphrase."""
-    url, branch = repository(repo)
+    url, branch = repository(repo, branch)
     kit.require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest), 'BACKUP_SELECTOR_INVALID')
     destination = kit.outside_git(destination)
     kit.require(not destination.exists(), 'MATERIALIZED_OUTPUT_EXISTS')
     with tempfile.TemporaryDirectory(prefix='frankenstein-private-restore-') as temporary:
         checkout = Path(temporary) / 'repository'
-        command(['git', 'clone', '--quiet', '--depth=1', '--single-branch', '--branch', branch,
-                 '--', url, str(checkout)])
+        checkout_backup(url, branch, checkout)
         source = kit.safe(checkout / 'frankenstein/backups' / digest)
         # Copy ciphertext outside Git before opening; never restore plaintext into a checkout.
         copied = Path(temporary) / 'ciphertext'
@@ -143,6 +151,7 @@ def restore(repo, digest, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repository', required=True, help='your existing private owner/repo')
+    parser.add_argument('--branch', help='explicit existing state branch; defaults to the repository default')
     sub = parser.add_subparsers(dest='action', required=True)
     backup = sub.add_parser('publish')
     for name in ('candidate', 'identity', 'context', 'capsule'):
@@ -159,14 +168,14 @@ def main():
     try:
         if args.action == 'capture':
             digest = capture(args.repository, args.staging, args.identity,
-                             kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256)
+                             kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256, args.branch)
             print('PRIVATE_BACKUP=' + digest)
         elif args.action == 'publish':
             digest = publish(args.repository, args.candidate, args.identity,
-                             kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256)
+                             kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256, args.branch)
             print('PRIVATE_BACKUP=' + digest)
         else:
-            restore(args.repository, args.sha256, args.output)
+            restore(args.repository, args.sha256, args.output, args.branch)
             print('PRIVATE_RESTORE=VERIFIED')
     except (OSError, ValueError, KeyError, TypeError) as error:
         print('PRIVATE_BACKUP=FAIL (' + (str(error) if isinstance(error, kit.KitError)
