@@ -17,6 +17,7 @@ check() {
 package_frankenstein-core() {
     depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
     optdepends=('sudo: privileged package and radio actions'
+                'github-cli: verify and stage selected stable engine releases'
                 'zoxide: optional interactive shell directory navigation'
                 'fzf: optional interactive shell completion and key bindings'
                 'polkit: native authorization for unprivileged power and network actions'
@@ -27,6 +28,7 @@ package_frankenstein-core() {
     install -Dm755 bin/frankenstein "$pkgdir/usr/bin/frankenstein"
     install -Dm644 lib/control.py "$pkgdir/usr/lib/frankenstein/control.py"
     install -Dm644 lib/profiles.py "$pkgdir/usr/lib/frankenstein/profiles.py"
+    install -Dm644 lib/releases.py "$pkgdir/usr/lib/frankenstein/releases.py"
     install -Dm644 lib/first_boot.py "$pkgdir/usr/lib/frankenstein/first_boot.py"
     install -Dm644 assets/frankenstein-first-boot.service "$pkgdir/usr/lib/systemd/system/frankenstein-first-boot.service"
     for asset in profiles/shell/*; do
