@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -114,6 +115,43 @@ class Portable(unittest.TestCase):
 
     def test_final_age_authentication_gates_all_output(self):
         self.rejected(self.changed(change_archive=lambda value: value[:-1]))
+
+    def test_restore_keeps_temporary_plaintext_on_destination_filesystem(self):
+        # A live ISO's default tmpfs may be unavailable or too small. Restoring
+        # must use the selected destination volume for all temporary archives.
+        with patch.object(tempfile, 'tempdir', str(self.case / 'unavailable-tmpfs')):
+            restored = self.case / 'disk-backed-restore'
+            portable.restore(self.bundle, restored, self.digest)
+        self.assertEqual((restored / 'state/desired/profile.json').read_bytes(), self.plain)
+
+    def test_installer_consumes_verified_identity_and_retains_independent_vault(self):
+        def module(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            result = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(result)
+            return result
+        fixture = module('install_fixture', ROOT / 'tests/provisioning-fixture.py')
+        installer = module('native_installer', ROOT / 'installer/install.py')
+        bundle = self.case / 'installation.fpe'
+        digest = fixture.create(bundle, 'synthetic-account-disk-only')
+        args = SimpleNamespace(phone=None, provisioning_bundle=bundle, sha256=digest)
+        staging = self.case / 'bootstrap'
+        staging.mkdir()
+        config, password, disk, supplied = installer.provision_input(args, staging)
+        self.assertEqual(config['username'], 'proof')
+        self.assertEqual(password, 'synthetic-account-disk-only')
+        self.assertEqual(password, disk)
+        supplied['recheck']()
+        restored = self.case / 'encrypted-root-fixture'
+        supplied['restore'](restored)
+        self.assertEqual((restored / 'state/desired/tuning.json').read_bytes(),
+                         b'{"fixture":"portable-tuning-preserved"}\n')
+        context = kit.decode((restored / 'context.json').read_bytes())
+        self.assertTrue(kit.inspect(restored / 'vault.age', restored / 'identity.txt', context))
+        with bundle.open('ab') as stream:
+            stream.write(b'changed')
+        with self.assertRaisesRegex(installer.Error, 'changed'):
+            supplied['recheck']()
 
     def test_context_and_recovery_binding_are_enforced(self):
         self.rejected(self.changed(change_header=lambda header: header['context']['features'].append('wrong')))

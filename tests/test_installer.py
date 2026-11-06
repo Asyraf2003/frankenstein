@@ -64,6 +64,26 @@ class Installer(unittest.TestCase):
         self.assertEqual(installer.partition('/dev/nvme0n1', 2), '/dev/nvme0n1p2')
         self.assertEqual(installer.partition('/dev/mmcblk0', 2), '/dev/mmcblk0p2')
 
+    def test_changed_provisioning_aborts_before_disk_mutation(self):
+        def changed():
+            raise ValueError('phone generation changed')
+        with patch.object(installer, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'generation changed'):
+                installer.install(self.disk, {}, '', '', {}, {'recheck': changed})
+            run.assert_not_called()
+
+    def test_provisioned_fields_are_validated_without_printing_credentials(self):
+        entries = {'desired/arch.json': json.dumps({'username': 'alice', 'hostname': 'workstation'}),
+                   'credentials/arch-install.json': json.dumps({'password': 'synthetic-account-only',
+                                                               'disk_passphrase': 'synthetic-disk-only'})}
+        config, password, disk = installer.supplied_fields(entries, json.loads)
+        self.assertEqual(config['username'], 'alice')
+        self.assertEqual(password, 'synthetic-account-only')
+        for invalid in ('short', 'secret\ninjected-command', None, ['not-a-password']):
+            entries['credentials/arch-install.json'] = json.dumps({'password': invalid, 'disk_passphrase': disk})
+            with self.assertRaises(installer.Error):
+                installer.supplied_fields(entries, json.loads)
+
     def test_profile_is_portable_and_rejects_injection(self):
         original = {'username': 'alice', 'hostname': 'workstation', 'timezone': 'Asia/Jakarta'}
         self.assertEqual(installer.profile(original)['packages'], [])

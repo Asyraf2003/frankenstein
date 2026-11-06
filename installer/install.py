@@ -10,12 +10,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 PAYLOAD = Path('/opt/frankenstein')
 TARGET = Path('/mnt/frankenstein')
 MAPPER = 'frankenstein-root'
 BASE = ['base', 'linux', 'linux-lts', 'linux-firmware', 'mkinitcpio', 'cryptsetup',
         'e2fsprogs', 'dosfstools', 'sudo', 'networkmanager', 'python', 'git',
+        'age', 'android-tools', 'openssl', 'github-cli',
         'openbox', 'xorg-server', 'xorg-xinit', 'xorg-xsetroot', 'dbus', 'python-pyxdg',
         'xterm', 'thunar', 'rofi', 'dunst', 'ttf-dejavu', 'playerctl', 'pipewire',
         'pipewire-pulse', 'wireplumber', 'polkit']
@@ -138,8 +140,10 @@ def verify_payload():
     return manifest
 
 
-def install(node, config, password, luks_secret, manifest):
+def install(node, config, password, luks_secret, manifest, supplied=None):
     # Repeat preconditions immediately before the first destructive operation.
+    if supplied:
+        supplied['recheck']()
     fresh = selected_disk(node['name'])
     if disk_identity(fresh) != disk_identity(node):
         raise Error('disk identity changed after approval')
@@ -165,6 +169,10 @@ def install(node, config, password, luks_secret, manifest):
         mounted = True
         (TARGET / 'boot').mkdir()
         run('mount', '--mkdir', '-o', 'fmask=0077,dmask=0077', esp, TARGET / 'boot')
+        restored = TARGET / 'var/lib/frankenstein/provisioned'
+        if supplied:
+            # The full portable payload lands on encrypted disk, never live RAM.
+            supplied['restore'](restored)
         cpu = Path('/proc/cpuinfo').read_text()
         microcode = ['intel-ucode'] if 'GenuineIntel' in cpu else ['amd-ucode'] if 'AuthenticAMD' in cpu else []
         run('pacstrap', '-K', TARGET, *BASE, *microcode, *config['packages'])
@@ -191,6 +199,17 @@ def install(node, config, password, luks_secret, manifest):
         user = config['username']
         chroot('useradd', '--create-home', '--groups', 'wheel', '--shell', '/bin/bash', user)
         chroot('chpasswd', secret=user + ':' + password + '\n')
+        if supplied:
+            private = TARGET / 'home' / user / '.local/state/frankenstein'
+            private.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.rename(restored, private / 'ecosystem')
+            if supplied.get('device_state'):
+                device_state = private / 'usb'
+                device_state.mkdir(mode=0o700)
+                for source in supplied['device_state']:
+                    shutil.copyfile(source, device_state / source.name)
+                    (device_state / source.name).chmod(0o600)
+            chroot('chown', '-R', user + ':' + user, '/home/' + user + '/.local')
         chroot('passwd', '-l', 'root')
         write('etc/sudoers.d/10-frankenstein', '%wheel ALL=(ALL:ALL) ALL\n', 0o440)
         chroot('visudo', '-cf', '/etc/sudoers')
@@ -208,7 +227,7 @@ def install(node, config, password, luks_secret, manifest):
                'fstrim.timer', 'frankenstein-first-boot.service')
         write('etc/frankenstein/install.json', json.dumps({
             'version': manifest['version'], 'username': user, 'filesystem': 'ext4',
-            'encrypted': True, 'boot_verified': False}) + '\n')
+            'encrypted': True, 'portable_state_restored': bool(supplied), 'boot_verified': False}) + '\n')
         for name in ('vmlinuz-linux', 'initramfs-linux.img', 'vmlinuz-linux-lts',
                      'initramfs-linux-lts.img', 'EFI/BOOT/BOOTX64.EFI'):
             if not (TARGET / 'boot' / name).is_file():
@@ -223,21 +242,80 @@ def install(node, config, password, luks_secret, manifest):
             run('cryptsetup', 'close', MAPPER)
 
 
-def read_secret(prompt):
-    first = getpass.getpass(prompt)
-    if len(first) < 12 or '\n' in first or '\r' in first or '\x00' in first:
+def valid_secret(value):
+    if not isinstance(value, str) or not 12 <= len(value) <= 4096 or any(c in value for c in '\n\r\x00'):
         raise Error('secret must have at least 12 characters and no control separators')
+    return value
+
+
+def read_secret(prompt):
+    first = valid_secret(getpass.getpass(prompt))
     if first != getpass.getpass('Repeat: '):
         raise Error('secrets do not match')
     return first
+
+
+def supplied_fields(entries, decode):
+    config = profile(decode(entries['desired/arch.json']))
+    secrets = decode(entries['credentials/arch-install.json'])
+    if not isinstance(secrets, dict) or set(secrets) != {'password', 'disk_passphrase'}:
+        raise Error('installation credentials require password and disk_passphrase')
+    return config, valid_secret(secrets['password']), valid_secret(secrets['disk_passphrase'])
+
+
+def provision_input(args, temporary):
+    # Only the installation adapter interprets Arch profile/credential names.
+    # Core, vault and transport remain independent of this schema and any OEM.
+    library = PAYLOAD / 'lib' if (PAYLOAD / 'lib').is_dir() else Path(__file__).resolve().parents[1] / 'lib'
+    sys.path.insert(0, str(library))
+    import provision
+    names = ['desired/arch.json', 'credentials/arch-install.json']
+    if args.phone:
+        state = provision.kit.outside_git(args.device_state)
+        run(sys.executable, provision.usb.__file__, '--serial', args.phone, '--state', state, 'pair')
+        connection = provision.connection('adb', args.phone, state)
+        selected, entries = provision.selected_entries(connection, names)
+        pin = state / ('phone-' + hashlib.sha256(args.phone.encode()).hexdigest() + '.der')
+        supplied = {
+            'recheck': lambda: provision.selected_entries(connection, [], expected=selected),
+            'restore': lambda destination: provision.receive('adb', args.phone, state, destination, expected=selected),
+            'device_state': [provision.kit.safe(state / name) for name in ('device.key', 'device.pem')] + [pin],
+        }
+    else:
+        bundle = provision.kit.outside_git(args.provisioning_bundle)
+        if bundle.stat().st_size > 64 * 1024**2:
+            raise Error('offline bootstrap is limited to 64 MiB; use --phone to stream a larger vault onto encrypted disk')
+        prepared = Path(temporary) / 'prepared'
+        provision.portable.restore(bundle, prepared, args.sha256)
+        entries = {}
+        for name in names:
+            path = provision.kit.safe(prepared / 'state' / name)
+            if path.stat().st_size > 1024**2:
+                raise Error('installation profile exceeds limit')
+            entries[name] = path.read_bytes()
+        def recheck():
+            if provision.kit.sha(bundle) != args.sha256:
+                raise Error('selected provisioning bundle changed')
+        supplied = {'recheck': recheck,
+                    'restore': lambda destination: provision.portable.restore(bundle, destination, args.sha256)}
+    return (*supplied_fields(entries, provision.kit.decode), supplied)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--disk', help='whole disk to inspect; no default selection')
     parser.add_argument('--profile', type=Path, help='non-secret username/hostname/timezone/packages JSON')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--phone', help='USB phone serial; requires owner pairing approval')
+    source.add_argument('--provisioning-bundle', type=Path, help='private FPE bundle (offline bootstrap, at most 64 MiB)')
+    parser.add_argument('--sha256', help='selected offline provisioning bundle digest')
+    parser.add_argument('--device-state', type=Path, default=Path('/root/.local/state/frankenstein/usb'))
     parser.add_argument('--execute', action='store_true', help='request installation; still requires typed approval')
     args = parser.parse_args(argv)
+    if args.profile and (args.phone or args.provisioning_bundle):
+        parser.error('--profile cannot override provisioned identity')
+    if bool(args.provisioning_bundle) != bool(args.sha256):
+        parser.error('--provisioning-bundle requires --sha256, and vice versa')
     if not args.disk:
         print(json.dumps(inventory(), indent=2))
         return 0
@@ -254,22 +332,35 @@ def main(argv=None):
                      'mount', 'umount', 'pacstrap', 'genfstab', 'arch-chroot', 'sync'):
         if not shutil.which(provider):
             raise Error('missing provider: ' + provider)
-    config = profile(json.loads(args.profile.read_text()) if args.profile else {
-        'username': input('Username: '), 'hostname': input('Hostname: '),
-        'timezone': input('Timezone [UTC]: ') or 'UTC'})
+    with tempfile.TemporaryDirectory(prefix='frankenstein-install-') as temporary:
+        return execute(args, node, temporary)
+
+
+def execute(args, node, temporary):
+    supplied = None
+    if args.phone or args.provisioning_bundle:
+        config, password, luks_secret, supplied = provision_input(args, temporary)
+    else:
+        config = profile(json.loads(args.profile.read_text()) if args.profile else {
+            'username': input('Username: '), 'hostname': input('Hostname: '),
+            'timezone': input('Timezone [UTC]: ') or 'UTC'})
     if not (Path('/usr/share/zoneinfo') / config['timezone']).is_file():
         raise Error('timezone is not installed')
     manifest = verify_payload()
     # Refresh only live-media package metadata; the installed target uses pacstrap's database.
     run('pacman', '-Sy', '--noconfirm')
     run('pacman', '-Si', *BASE, *config['packages'], capture=True)
-    password = read_secret('New account password: ')
-    print('Keep this disk recovery passphrase outside the encrypted system. It is not a vault recovery key.')
-    luks_secret = read_secret('Disk recovery passphrase: ')
+    if not supplied:
+        password = read_secret('New account password: ')
+        print('Keep this disk recovery passphrase outside the encrypted system. It is not a vault recovery key.')
+        luks_secret = read_secret('Disk recovery passphrase: ')
+    else:
+        print('Provisioned account and disk unlock material verified. Preserve your independent vault recovery backup.')
+    print('Install user ' + config['username'] + ' on host ' + config['hostname'] + '.')
     print('ALL DATA ON THE SELECTED DISK WILL BE ERASED. Type: ' + approval(node))
     if input('Approval: ') != approval(node):
         raise Error('disk erase was not approved')
-    install(node, config, password, luks_secret, manifest)
+    install(node, config, password, luks_secret, manifest, supplied)
     print('Installation written. Reboot, unlock the disk, log in, then run startx. Boot is not yet verified.')
     return 0
 

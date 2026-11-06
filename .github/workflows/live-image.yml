@@ -6,6 +6,8 @@ on:
       - 'packaging/**'
       - 'lib/first_boot.py'
       - 'tests/test_installer.py'
+      - 'tests/live-vm.py'
+      - 'tests/provisioning-fixture.py'
       - '.github/workflows/live-image.yml'
   workflow_dispatch:
 permissions:
@@ -29,7 +31,7 @@ jobs:
       - name: Install and boot a disposable 4 GiB VM
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf python3-pexpect
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf python3-pexpect age
           python3 tests/live-vm.py --iso "$(find "$RUNNER_TEMP/frankenstein/build/out" -name '*.iso' -print -quit)" --state "$RUNNER_TEMP/vm-proof"
       - uses: actions/upload-artifact@v4
         if: always()

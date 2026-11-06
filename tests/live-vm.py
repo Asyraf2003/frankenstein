@@ -5,7 +5,9 @@ Requires Linux, qemu-system-x86_64, qemu-img, OVMF and python-pexpect.
 Never attaches a physical disk. Uses 4 GiB RAM. Test credentials are disposable.
 """
 import argparse
+import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -109,13 +111,20 @@ def main():
         vm.child.sendline('exec bash --noprofile --norc')
         vm.child.expect(r'bash-[^\r\n]*# ')
         vm.command('test -d /sys/firmware/efi && test -d /run/archiso')
-        config = json.dumps({'username': 'proof', 'hostname': 'proof', 'timezone': 'UTC',
-                             'packages': ['wmctrl', 'xorg-xprop']})
-        vm.command("printf '%s' '" + config + "' > /root/proof.json")
-        vm.child.sendline('frankenstein-install --disk /dev/vda --profile /root/proof.json --execute')
-        for prompt in ('New account password:', 'Repeat:', 'Disk recovery passphrase:', 'Repeat:'):
-            vm.child.expect_exact(prompt, timeout=600)
-            vm.child.sendline(SECRET)
+        spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('provisioning-fixture.py'))
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        bundle = state / 'synthetic-install.fpe'
+        selected = fixture.create(bundle, SECRET)
+        encoded = base64.b64encode(bundle.read_bytes()).decode()
+        vm.command('umask 077; : > /root/provision.b64')
+        # Keep each serial terminal line below the canonical input limit.
+        for start in range(0, len(encoded), 1024):
+            vm.command("printf '%s' '" + encoded[start:start + 1024] + "' >> /root/provision.b64")
+        vm.command('base64 -d /root/provision.b64 > /root/provision.fpe && rm /root/provision.b64')
+        vm.child.sendline('frankenstein-install --disk /dev/vda --provisioning-bundle /root/provision.fpe --sha256 ' + selected + ' --execute')
+        # Account/disk credentials come from the verified synthetic vault. Only
+        # this disposable disk's explicit destructive approval is automated.
         vm.child.expect(r'ERASE /dev/vda [a-f0-9]{12}')
         approval = vm.child.match.group(0)
         vm.child.expect_exact('Approval:')
@@ -143,6 +152,9 @@ def main():
         vm.child.sendline(SECRET)
         vm.child.expect(r'\$ ')
         vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
+        vm.command("test -r ~/.local/state/frankenstein/ecosystem/identity.txt && test \"$(stat -c %a ~/.local/state/frankenstein/ecosystem/identity.txt)\" = 600")
+        vm.command("grep -qx '{\"fixture\":\"portable-tuning-preserved\"}' ~/.local/state/frankenstein/ecosystem/state/desired/tuning.json")
+        vm.command('frankenstein vault inspect --candidate ~/.local/state/frankenstein/ecosystem/vault.age --identity ~/.local/state/frankenstein/ecosystem/identity.txt --context ~/.local/state/frankenstein/ecosystem/context.json')
         vm.keys('proof')
         time.sleep(2)
         vm.keys(SECRET)
@@ -152,12 +164,33 @@ def main():
         vm.command("for i in $(seq 1 60); do DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority wmctrl -m 2>/dev/null | grep -q Openbox && break; sleep 1; done; DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority wmctrl -m | grep Openbox", timeout=90)
         vm.command('DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority frankenstein-welcome </dev/null')
         vm.qmp('screendump', {'filename': str(state / 'welcome.ppm')})
+        # Exercise the separately installed recovery kernel, rather than treating
+        # the existence of its boot files as proof of a working recovery path.
+        # Split the marker in the shell command so command echo cannot match it.
+        vm.child.sendline("sudo -k -p 'RECOVERY_''SUDO:' sh -ec \"sed -i 's/^default .*/default frankenstein-lts.conf/' /boot/loader/loader.conf; grep -qx 'default frankenstein-lts.conf' /boot/loader/loader.conf; sync; systemctl poweroff\"")
+        vm.child.expect_exact('RECOVERY_SUDO:')
+        vm.child.sendline(SECRET)
+        vm.child.expect(pexpect.EOF, timeout=120)
+        vm.stop()
+        vm.start()
+        vm.child.expect(r'(?i)passphrase.*:', timeout=300)
+        vm.child.sendline(SECRET)
+        vm.child.expect(r'login:', timeout=300)
+        vm.child.sendline('proof')
+        vm.child.expect_exact('Password:')
+        vm.child.sendline(SECRET)
+        vm.child.expect(r'\$ ')
+        vm.command("uname -r | grep -E -- '-lts$'")
+        vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
         with iso.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         (state / 'proof.json').write_text(json.dumps({'result': 'PASS', 'iso_sha256': digest,
             'memory_mib': 4096, 'checks': ['live UEFI boot', 'blank disk install', 'LUKS unlock',
-            'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome'],
-            'not_verified': ['LTS recovery boot', 'physical hardware', 'USB pairing', 'vault']}, indent=2) + '\n')
+            'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome',
+            'LTS recovery boot', 'LTS LUKS unlock and PAM login', 'LTS first-boot verification'],
+            'provisioning': ['synthetic encrypted bundle supplies account and disk credentials',
+                             'private tuning retained', 'portable vault independently opens after boot'],
+            'not_verified': ['physical hardware', 'USB pairing inside VM', 'generation rollback']}, indent=2) + '\n')
         print('CLEAN_DISK_VM_PROOF=PASS')
     except Exception:
         if vm.log:

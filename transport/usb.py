@@ -178,13 +178,28 @@ def activate(stream, identifier, previous='0' * 64):
     if any(len(value) != 64 or any(c not in '0123456789abcdef' for c in value)
            for value in (identifier, previous)):
         raise ValueError('invalid vault generation')
+    stream.settimeout(310)  # Match the receiver's bounded native verification watchdog.
     stream.sendall(b'FRK1\x04' + bytes.fromhex(identifier) + bytes.fromhex(previous))
     if read_exact(stream, 1) != b'\0':
         raise ValueError('vault verification or generation conflict')
     return identifier
 
 
-def receive(usb, key, cert, phone, destination):
+def read_entry(stream, identifier, name):
+    encoded = name.encode('utf-8')
+    if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier) or not 0 < len(encoded) <= 512:
+        raise ValueError('invalid vault entry selection')
+    stream.settimeout(310)
+    stream.sendall(b'FRK1\x05' + bytes.fromhex(identifier) + struct.pack('>H', len(encoded)) + encoded)
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('vault entry unavailable')
+    length = struct.unpack('>I', read_exact(stream, 4))[0]
+    if length > 1024 * 1024:
+        raise ValueError('vault entry exceeds limit')
+    return read_exact(stream, length)
+
+
+def receive(usb, key, cert, phone, destination, expected=None):
     """Receive one selected vault generation, rejecting a concurrent switch."""
     destination = outside_git(destination)
     if destination.exists():
@@ -198,6 +213,8 @@ def receive(usb, key, cert, phone, destination):
                 identifier = current(stream)
             if identifier == '0' * 64:
                 raise ValueError('phone has no provisioned vault')
+            if expected is not None and identifier != expected:
+                raise ValueError('phone vault changed since selection; retry')
             with connect(port, key, cert, phone) as stream:
                 pull(stream, identifier, selected)
             with connect(port, key, cert, phone) as stream:

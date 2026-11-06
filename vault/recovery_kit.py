@@ -257,7 +257,10 @@ def create(staging, ctx, recipients, candidate):
 def inspect(candidate, identity, expected, *, _materialize=None):
     candidate, identity = safe(candidate), safe(identity)
     expected = context(expected)
-    with tempfile.TemporaryDirectory(prefix='.kit-inspect-') as folder:
+    # Restoring a large vault must keep the temporary plaintext tar on the
+    # destination filesystem (e.g. the new encrypted root), not live-ISO tmpfs.
+    with tempfile.TemporaryDirectory(prefix='.kit-inspect-',
+                                     dir=_materialize.parent if _materialize else None) as folder:
         copied = Path(folder) / 'candidate.age'
         require(candidate.is_file(), 'CANDIDATE_MISSING')
         before = stable(candidate.stat())
