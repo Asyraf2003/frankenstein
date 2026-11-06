@@ -63,6 +63,54 @@ class Envelope(unittest.TestCase):
         kit.create(self.stage, self.ctx, self.recipients[:2], path)
         return path
 
+    def test_restore_is_complete_private_and_preserves_unrelated_data(self):
+        candidate = self.candidate()
+        output = self.root / 'restored'
+        unrelated = self.root / 'keep.txt'
+        unrelated.write_bytes(b'newer user data')
+        proof = kit.materialize(candidate, self.identities[1], self.ctx, output, kit.sha(candidate))
+        self.assertEqual(proof['archive_sha256'], kit.sha(candidate))
+        for name, data in self.data.items():
+            self.assertEqual((output / name).read_bytes(), data)
+            self.assertEqual((output / name).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(unrelated.read_bytes(), b'newer user data')
+        with self.assertRaisesRegex(kit.KitError, 'MATERIALIZED_OUTPUT_EXISTS'):
+            kit.materialize(candidate, self.identities[1], self.ctx, output, kit.sha(candidate))
+
+    def test_restore_failure_never_exposes_partial_destination(self):
+        candidate = self.candidate()
+        output = self.root / 'restored'
+        with self.assertRaisesRegex(kit.KitError, 'ARCHIVE_SELECTION_MISMATCH'):
+            kit.materialize(candidate, self.identities[0], self.ctx, output, '0' * 64)
+        self.assertFalse(output.exists())
+        with patch.object(kit, 'sync_directory', side_effect=OSError('injected fsync failure')):
+            with self.assertRaises(OSError):
+                kit.materialize(candidate, self.identities[0], self.ctx, output, kit.sha(candidate))
+        self.assertFalse(output.exists())
+
+    def test_restore_refuses_git_worktree(self):
+        candidate = self.candidate()
+        repository = self.root / 'repository'
+        native(['git', 'init', '-q', str(repository)])
+        output = repository / 'restored'
+        with self.assertRaisesRegex(kit.KitError, 'OUTPUTS_MUST_BE_OUTSIDE_GIT'):
+            kit.materialize(candidate, self.identities[0], self.ctx, output, kit.sha(candidate))
+        self.assertFalse(output.exists())
+
+    def test_restore_concurrent_destination_is_preserved(self):
+        candidate = self.candidate()
+        output = self.root / 'restored'
+        original = kit.sync_directory
+        def raced(path):
+            if path.name == 'owners':
+                output.mkdir()
+            original(path)
+        with patch.object(kit, 'sync_directory', side_effect=raced):
+            with self.assertRaisesRegex(kit.KitError, 'MATERIALIZED_OUTPUT_EXISTS'):
+                kit.materialize(candidate, self.identities[0], self.ctx, output, kit.sha(candidate))
+        self.assertEqual(list(output.iterdir()), [])
+
     def baseline(self):
         candidate = self.candidate()
         receipt = kit.promote(candidate, self.identities[0], self.store, self.ctx)

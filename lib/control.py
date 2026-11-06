@@ -21,7 +21,7 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   service status|enable|disable network|bluetooth
   profile list|status|verify|apply NAME [--replace]|rollback|recover
   engine stage vMAJOR.MINOR.PATCH NEW_DIRECTORY
-  vault create|inspect|promote [ARGS] (use vault --help for explicit input paths)
+  vault create|inspect|promote|restore [ARGS] (use vault --help for explicit input paths)
 
 Install/remove/update use pacman; installation performs a full system upgrade.
 Power actions use systemd/logind and its normal authorization and inhibitors.

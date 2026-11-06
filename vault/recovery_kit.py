@@ -7,6 +7,8 @@ Format validation does not certify live snapshots or workstation readiness.
 Native Vault/keyring consumers keep ownership of their internal formats.
 """
 import argparse
+import ctypes
+import errno
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -305,21 +307,24 @@ def materialize(candidate, identity, expected, destination, expected_archive):
         files.mkdir(mode=0o700)
         proof = inspect(candidate, identity, expected, _materialize=files)
         require(proof['archive_sha256'] == expected_archive, 'ARCHIVE_SELECTION_MISMATCH')
-        destination.mkdir(mode=0o700)
-        reserved = destination.stat()
-        try:
-            for name, record in proof['manifest']['files'].items():
-                target = safe(destination / name)
-                private_directories(target.parent)
-                publish_exclusive(files / name, target)
-                require(sha(target) == record['sha256'], 'MATERIALIZED_INPUT_CHANGED')
-            sync_directory(destination)
-        except BaseException:
-            if destination.exists() and not destination.is_symlink():
-                now = destination.stat()
-                if (now.st_dev, now.st_ino) == (reserved.st_dev, reserved.st_ino):
-                    shutil.rmtree(destination)
-            raise
+        for directory in sorted((p for p in files.rglob('*') if p.is_dir()),
+                                key=lambda p: len(p.parts), reverse=True):
+            sync_directory(directory)
+        sync_directory(files)
+        # Linux/Android native atomic exclusive rename: a concurrent empty
+        # destination must not be overwritten either. Fail closed if unavailable.
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(libc, 'renameat2', None)
+        require(rename is not None, 'ATOMIC_RESTORE_UNAVAILABLE')
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                           ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(-100, os.fsencode(files), -100, os.fsencode(destination), 1):
+            code = ctypes.get_errno()
+            if code == errno.EEXIST:
+                raise KitError('MATERIALIZED_OUTPUT_EXISTS')
+            raise OSError(code, 'atomic restore publication failed')
+        sync_directory(destination.parent)
     return proof
 
 
@@ -417,6 +422,12 @@ def main():
     accept.add_argument('--identity', type=Path, required=True)
     accept.add_argument('--store', type=Path, required=True)
     accept.add_argument('--context', type=Path, required=True)
+    restore = commands.add_parser('restore')
+    restore.add_argument('--candidate', type=Path, required=True)
+    restore.add_argument('--identity', type=Path, required=True)
+    restore.add_argument('--context', type=Path, required=True)
+    restore.add_argument('--output', type=Path, required=True)
+    restore.add_argument('--sha256', required=True, help='selected ciphertext digest')
     args = parser.parse_args()
     try:
         if args.command == 'create':
@@ -425,6 +436,10 @@ def main():
         elif args.command == 'inspect':
             proof = inspect(args.candidate, args.identity, decode(safe(args.context).read_bytes()))
             print('KIT_FORMAT=VALID files=' + str(len(proof['manifest']['files'])))
+        elif args.command == 'restore':
+            materialize(args.candidate, args.identity, decode(safe(args.context).read_bytes()),
+                        args.output, args.sha256)
+            print('KIT_RESTORE=VERIFIED (staged files; system application remains separate)')
         else:
             promote(args.candidate, args.identity, args.store, decode(safe(args.context).read_bytes()))
             print('KIT_FORMAT_PROMOTION=PASS (native owner readiness remains separate)')
