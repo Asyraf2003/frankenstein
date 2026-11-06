@@ -21,6 +21,8 @@ public final class MainActivity extends Activity {
     private X509Certificate approvedPeer;
     private long approvedAt;
     private boolean startingPeer;
+    private Enrollment enrollment;
+    private String exporting;
     @Override protected void onStart() {
         super.onStart();
         foreground = true;
@@ -49,6 +51,7 @@ public final class MainActivity extends Activity {
             return;
         }
         revision++;
+        if (enrollment != null) { enrollment.clear(); enrollment = null; }
         vaultUnlocked = false;
         approvedPeer = null;
         if (server != null) { server.close(); server = null; }
@@ -86,6 +89,38 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 3) {
+            if (result == RESULT_OK) {
+                try {
+                    if (!new NativeVault(this).current().equals(NativeVault.EMPTY)) {
+                        status.setText("This phone already has a vault. Open it or export its backup.");
+                        return;
+                    }
+                    while (layout.getChildCount() > 1) layout.removeViewAt(1);
+                    enrollment = new Enrollment(this, layout, status, this::enroll);
+                } catch (Exception error) { status.setText("Protected storage is unavailable."); }
+            }
+            return;
+        }
+        if (request == 4) {
+            if (result == RESULT_OK) {
+                try {
+                    exporting = new NativeVault(this).current();
+                    if (exporting.equals(NativeVault.EMPTY)) { exporting = null; status.setText("Create or receive a vault first."); return; }
+                    Intent document = new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip")
+                        .addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE, "frankenstein-encrypted-backup.zip");
+                    startActivityForResult(document, 5);
+                } catch (Exception error) { status.setText("Backup could not start."); }
+            }
+            return;
+        }
+        if (request == 5) {
+            String selected = exporting;
+            exporting = null;
+            if (result == RESULT_OK && data != null && data.getData() != null && selected != null)
+                exportBackup(selected, data.getData());
+            return;
+        }
         if (request == 2) {
             if (result == RESULT_OK) { vaultUnlocked = true; loadVault(null); }
             else show(new Intent());
@@ -136,6 +171,13 @@ public final class MainActivity extends Activity {
     @Override protected void onStop() {
         super.onStop();
         foreground = false;
+        if (enrollment != null) {
+            enrollment.clear(); enrollment = null;
+            revision++;
+            while (layout.getChildCount() > 1) layout.removeViewAt(1);
+            status.setText("Setup form cleared while the app was closed. No draft secrets were saved.");
+            addVaultButton();
+        }
         if (vaultUnlocked) {
             vaultUnlocked = false;
             revision++;
@@ -146,6 +188,16 @@ public final class MainActivity extends Activity {
         if (server != null) { server.close(); server = null; status.setText("USB access stopped while the app is closed."); }
     }
     private void addVaultButton() {
+        Button setup = new Button(this);
+        setup.setText("Set up this phone");
+        setup.setFilterTouchesWhenObscured(true);
+        setup.setOnClickListener(view -> authenticate("Set up Frankenstein", "Confirm ownership before creating a vault", 3));
+        layout.addView(setup);
+        Button backup = new Button(this);
+        backup.setText("Export encrypted recovery backup");
+        backup.setFilterTouchesWhenObscured(true);
+        backup.setOnClickListener(view -> authenticate("Export recovery backup", "Confirm ownership", 4));
+        layout.addView(backup);
         Button open = new Button(this);
         open.setText("Open my vault");
         open.setFilterTouchesWhenObscured(true);
@@ -156,6 +208,49 @@ public final class MainActivity extends Activity {
             else status.setText("Set a device screen lock before opening the vault.");
         });
         layout.addView(open);
+    }
+    private void authenticate(String title, String message, int request) {
+        KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        Intent unlock = keyguard.createConfirmDeviceCredentialIntent(title, message);
+        if (unlock == null) status.setText("Set a device screen lock first.");
+        else startActivityForResult(unlock, request);
+    }
+    private void enroll(org.json.JSONObject request) {
+        enrollment = null;
+        while (layout.getChildCount() > 1) layout.removeViewAt(1);
+        status.setText("Creating and verifying your encrypted vault…");
+        int selectedRevision = revision;
+        new Thread(() -> {
+            boolean success = false;
+            try {
+                new NativeVault(this).enroll(LocalStorage.open(this), request);
+                success = true;
+            } catch (Exception error) { /* No input values in diagnostics. */ }
+            finally { request.remove("recovery_passphrase"); request.remove("files"); }
+            boolean accepted = success;
+            runOnUiThread(() -> {
+                if (destroyed || revision != selectedRevision) return;
+                status.setText(accepted ? "Vault created. Export its encrypted backup now and keep your recovery passphrase separately. GitHub backup still needs setup." :
+                    "Setup failed or another vault became active. Existing state was preserved.");
+                addVaultButton();
+            });
+        }, "frankenstein-enrollment").start();
+    }
+    private void exportBackup(String selected, android.net.Uri uri) {
+        status.setText("Verifying and exporting encrypted backup…");
+        new Thread(() -> {
+            boolean success = false;
+            try (OutputStream target = getContentResolver().openOutputStream(uri, "wt")) {
+                if (target == null) throw new IOException();
+                BackupExport.write(LocalStorage.open(this), new NativeVault(this), selected, target);
+                success = true;
+            } catch (Exception error) { /* Partial provider output must not be announced as a backup. */ }
+            boolean complete = success;
+            runOnUiThread(() -> {
+                if (!destroyed) status.setText(complete ? "Encrypted backup exported. Keep it outside this phone, with the recovery passphrase stored separately." :
+                    "Export failed. The selected file may be incomplete; export again. Your local vault is unchanged.");
+            });
+        }, "frankenstein-backup-export").start();
     }
     private void loadVault(String selected) {
         int requestedRevision = revision;

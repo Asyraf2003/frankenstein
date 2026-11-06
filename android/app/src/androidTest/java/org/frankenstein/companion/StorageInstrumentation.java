@@ -86,8 +86,52 @@ public final class StorageInstrumentation extends Instrumentation {
                 try { isolatedVault.activate(isolatedStore, selectedId, NativeVault.EMPTY); }
                 catch (IOException expected) { conflict = true; }
                 if (!conflict || !isolatedVault.current().equals(selectedId)) throw new AssertionError("Concurrent selection was overwritten");
+                boolean enrollmentRejected = false;
+                try { isolatedVault.enroll(isolatedStore, new org.json.JSONObject()); }
+                catch (IOException expected) { enrollmentRejected = true; }
+                if (!enrollmentRejected || !isolatedVault.current().equals(selectedId))
+                    throw new AssertionError("Enrollment replaced existing state");
             } finally {
                 try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(scratch.toPath())) {
+                    for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator)
+                        Files.delete(path);
+                }
+            }
+            File enrollmentScratch = new File(getTargetContext().getNoBackupFilesDir(), "test-enrollment-" + java.util.UUID.randomUUID());
+            if (!enrollmentScratch.mkdir()) throw new IOException("Cannot reserve enrollment fixture directory");
+            try {
+                android.content.Context isolated = new android.content.ContextWrapper(getTargetContext()) {
+                    @Override public File getNoBackupFilesDir() { return enrollmentScratch; }
+                };
+                org.json.JSONObject files = new org.json.JSONObject();
+                Enrollment.add(files, "desired/arch.json", new org.json.JSONObject().put("username", "fixture")
+                    .put("hostname", "phonecreated").put("timezone", "UTC").put("packages", new org.json.JSONArray()));
+                Enrollment.add(files, "credentials/arch-install.json", new org.json.JSONObject()
+                    .put("password", "synthetic-account-only").put("disk_passphrase", "synthetic-disk-only"));
+                org.json.JSONObject context = new org.json.JSONObject().put("revisions", new org.json.JSONObject()
+                    .put("engine", BuildConfig.ENGINE_REVISION).put("state", "0000000000000000000000000000000000000000"))
+                    .put("features", new org.json.JSONArray().put("synthetic-phone-enrollment"))
+                    .put("required_owners", new org.json.JSONArray().put("desired").put("credentials"));
+                org.json.JSONObject request = new org.json.JSONObject().put("context", context).put("files", files)
+                    .put("recovery_passphrase", "synthetic-phone-recovery-only-2026");
+                BlobStore store = LocalStorage.open(isolated);
+                NativeVault enrolled = new NativeVault(isolated);
+                String enrolledId = enrolled.enroll(store, request);
+                if (!enrolled.current().equals(enrolledId)) throw new AssertionError("Enrollment was not activated");
+                File exported = new File(getTargetContext().getExternalFilesDir(null), "enrollment-fixture.zip");
+                try (FileOutputStream target = new FileOutputStream(exported)) { BackupExport.write(store, enrolled, enrolledId, target); }
+                int count = 0;
+                try (java.util.zip.ZipInputStream exportedZip = new java.util.zip.ZipInputStream(new FileInputStream(exported))) {
+                    java.util.zip.ZipEntry entry;
+                    while ((entry = exportedZip.getNextEntry()) != null) {
+                        if (!Arrays.asList("vault.age", "context.json", "selection.json", "recovery/identity.age", "recovery/recipient.txt", "recovery/manifest.json").contains(entry.getName()))
+                            throw new AssertionError("Unexpected backup member");
+                        count++;
+                    }
+                }
+                if (count != 6) throw new AssertionError("Incomplete ciphertext backup");
+            } finally {
+                try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(enrollmentScratch.toPath())) {
                     for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator)
                         Files.delete(path);
                 }
@@ -97,7 +141,7 @@ public final class StorageInstrumentation extends Instrumentation {
             try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
             catch (Exception expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Native age accepted altered fixture");
-            result.putString("result", "PASS: AndroidKeyStore persistence, streaming roundtrip, directory sync, tamper rejection, native age opening, final authentication, generation conflict preservation");
+            result.putString("result", "PASS: AndroidKeyStore storage, tamper/final authentication, concurrent generation preservation, native phone enrollment and ciphertext-only recovery export");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());

@@ -17,6 +17,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,7 @@ sys.path.insert(0, str(ROOT / 'vault'))
 import portable
 import recovery_kit as kit
 import recovery_opening as opening
+import recovery_backup
 sys.path.insert(0, str(ROOT / 'lib'))
 import provision
 spec = importlib.util.spec_from_file_location('native_opening', ROOT / 'tests/native-vault-opening.py')
@@ -98,6 +100,66 @@ class Portable(unittest.TestCase):
         value = json.loads(result.stdout)
         self.assertEqual(base64.b64decode(value['selected']['base64']), self.plain)
         self.assertEqual(value['manifest']['context'], self.context)
+
+    def test_native_enrollment_restores_without_original_device_using_recovery(self):
+        phrase = secrets.token_urlsafe(32)
+        request = {'context': self.context, 'files': {'desired/profile.json': base64.b64encode(self.plain).decode()},
+                   'recovery_passphrase': phrase}
+        result = subprocess.run([str(BRIDGE), 'enroll'], input=kit.encoded(request), capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, 'Native enrollment failed; private output withheld')
+        self.assertEqual(result.stderr, b'')
+        self.assertNotIn(phrase.encode(), result.stdout)
+        bundle = self.case / 'enrolled.fpe'
+        bundle.write_bytes(result.stdout)
+        restored = self.case / 'enrolled'
+        portable.restore(bundle, restored, kit.sha(bundle))
+        self.assertEqual((restored / 'state/desired/profile.json').read_bytes(), self.plain)
+        # Delete the portable opening key and bundle. Recovery has only the
+        # independently encrypted identity, ciphertext archive and external phrase.
+        (restored / 'identity.txt').unlink()
+        bundle.unlink()
+        recovered = self.case / 'recovery.tar'
+        code, _, supplied = helper.tty(['age', '--decrypt', '--identity', restored / 'recovery/identity.age',
+                                       '--output', recovered, restored / 'vault.age'], [phrase], native=True)
+        self.assertEqual((code, supplied), (0, 1), 'Recovery failed; transcript withheld')
+        with tarfile.open(recovered) as archive:
+            self.assertEqual(archive.extractfile('payload/desired/profile.json').read(), self.plain)
+        exported = self.case / 'backup.zip'
+        with zipfile.ZipFile(exported, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in ('vault.age', 'context.json', 'recovery/identity.age', 'recovery/recipient.txt', 'recovery/manifest.json'):
+                archive.write(restored / name, name)
+            archive.writestr('selection.json', kit.encoded({'schema': 1,
+                'archive_sha256': kit.sha(restored / 'vault.age'),
+                'recovery_manifest_sha256': kit.sha(restored / 'recovery/manifest.json')}))
+        recoveredDirectory = self.case / 'zip-restored'
+        code, _, supplied = helper.tty([ROOT / 'vault/recovery_backup.py', '--source', exported,
+            '--output', recoveredDirectory, '--sha256', kit.sha(exported)], [phrase])
+        self.assertEqual((code, supplied), (0, 1), 'Backup restore failed; transcript withheld')
+        self.assertEqual((recoveredDirectory / 'state/desired/profile.json').read_bytes(), self.plain)
+        self.assertEqual((recoveredDirectory / 'identity.txt').stat().st_mode & 0o777, 0o600)
+        wrongDirectory = self.case / 'wrong-recovery'
+        code, _, supplied = helper.tty([ROOT / 'vault/recovery_backup.py', '--source', exported,
+            '--output', wrongDirectory, '--sha256', kit.sha(exported)], ['wrong-synthetic-passphrase'])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(wrongDirectory.exists())
+        self.assertFalse(list(self.case.glob('.recovery-*')))
+        request['recovery_passphrase'] = 'too-short'
+        rejected = subprocess.run([str(BRIDGE), 'enroll'], input=kit.encoded(request), capture_output=True, timeout=30)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(rejected.stdout, b'')
+
+    def test_recovery_zip_rejects_extra_paths_before_extracting(self):
+        bad = self.case / 'traversal.zip'
+        with zipfile.ZipFile(bad, 'w') as archive:
+            for name in recovery_backup.FILES:
+                archive.writestr(name, b'fixture')
+            archive.writestr('../escaped', b'bad')
+        destination = self.case / 'unpacked'
+        destination.mkdir()
+        with self.assertRaisesRegex(kit.KitError, 'LAYOUT_INVALID'):
+            recovery_backup.unpack(bad, destination)
+        self.assertEqual(list(destination.iterdir()), [])
+        self.assertFalse((self.case / 'escaped').exists())
 
     def test_fresh_device_can_replicate_without_original_identity(self):
         self.key.unlink()
