@@ -24,8 +24,9 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   vault create|inspect|promote|restore [ARGS] (use vault --help for explicit input paths)
   recovery-key enroll|verify|recipient [ARGS] (native age passphrase prompt)
   vault-backup --repository OWNER/PRIVATE_REPO capture|publish|restore [ARGS]
-  usb --serial DEVICE --state PRIVATE_DIRECTORY pair|push|pull|current|activate [ARGS]
+  usb --serial DEVICE --state PRIVATE_DIRECTORY pair|push|pull|receive|current|activate [ARGS]
   portable create|restore [ARGS] (private provisioning bundle; never store in Git)
+  provision --serial DEVICE --state PRIVATE_DIRECTORY --output NEW_PRIVATE_DIRECTORY
 
 Install/remove/update use pacman; installation performs a full system upgrade.
 Power actions use systemd/logind and its normal authorization and inhibitors.
@@ -190,6 +191,9 @@ def main(args):
         return call([sys.executable, '/usr/lib/frankenstein/transport/usb.py', *args[1:]]).returncode
     if args[0] == 'portable':
         return call([sys.executable, '/usr/lib/frankenstein/vault/portable.py', *args[1:]]).returncode
+    if args[0] == 'provision':
+        import provision
+        return provision.main(args[1:])
     handlers = {'packages': packages, 'power': power, 'wifi': wifi, 'bt': bluetooth, 'service': service}
     if args[0] not in handlers:
         raise Error('unknown command; use frankenstein --help')

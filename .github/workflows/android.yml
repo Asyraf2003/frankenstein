@@ -1,7 +1,7 @@
 name: Android companion
 on:
   pull_request:
-    paths: ['android/**', 'transport/**', 'vault/**', 'tests/test_usb.py', 'tests/native-portable.py', '.github/workflows/android.yml']
+    paths: ['android/**', 'transport/**', 'vault/**', 'lib/provision.py', 'tests/test_usb.py', 'tests/native-portable.py', '.github/workflows/android.yml']
   push:
     branches: [main]
 permissions:

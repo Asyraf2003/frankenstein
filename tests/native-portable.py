@@ -8,18 +8,23 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import socket
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'vault'))
 import portable
 import recovery_kit as kit
 import recovery_opening as opening
+sys.path.insert(0, str(ROOT / 'lib'))
+import provision
 spec = importlib.util.spec_from_file_location('native_opening', ROOT / 'tests/native-vault-opening.py')
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
@@ -149,6 +154,67 @@ class Portable(unittest.TestCase):
         (repo / '.git').write_text('gitdir: C:/foreign/worktree\n')
         with self.assertRaisesRegex(kit.KitError, 'OUTSIDE_GIT'):
             portable.restore(self.bundle, repo / 'restore', self.digest)
+
+    def test_provision_receives_selected_generation_and_fails_closed(self):
+        # A local wire-protocol fixture, not evidence of Android/TLS pairing.
+        # The real receive, hashing, age decrypt and atomic restore all execute.
+        for fault in (None, 'changed', 'disconnect', 'corrupt', 'empty'):
+            with self.subTest(fault=fault):
+                state = self.case / ('transport-' + str(fault))
+                state.mkdir(mode=0o700)
+                serial = 'fixture'
+                (state / ('phone-' + hashlib.sha256(serial.encode()).hexdigest() + '.der')).write_bytes(b'fixture')
+                output = self.case / ('received-' + str(fault))
+                data = self.bundle.read_bytes()
+                if fault == 'corrupt':
+                    data = data[:-1] + bytes([data[-1] ^ 1])
+                selected = hashlib.sha256(data).hexdigest()
+                listener = socket.socket()
+                listener.bind(('127.0.0.1', 0))
+                listener.listen(1)
+                listener.settimeout(2)
+                port = listener.getsockname()[1]
+                errors, removed = [], []
+                def serve():
+                    try:
+                        for index in range(1 if fault == 'empty' else 2 if fault == 'disconnect' else 3):
+                            with listener.accept()[0] as stream:
+                                stream.settimeout(2)
+                                request = provision.usb.read_exact(stream, 37)
+                                if index != 1:
+                                    self.assertEqual(request, b'FRK1\x03' + bytes(32))
+                                    current = '0' * 64 if fault == 'empty' else 'f' * 64 if fault == 'changed' and index == 2 else selected
+                                    stream.sendall(b'\0' + current.encode())
+                                else:
+                                    self.assertEqual(request, b'FRK1\x02' + bytes.fromhex(selected))
+                                    stream.sendall(b'\0' + struct.pack('>Q', len(data)))
+                                    stream.sendall(data[:100] if fault == 'disconnect' else data + b'\0')
+                    except BaseException as error:
+                        errors.append(error)
+                worker = threading.Thread(target=serve)
+                worker.start()
+                class Phone:
+                    def forward(self): return port
+                    def remove(self, selected_port): removed.append(selected_port)
+                try:
+                    with patch.object(provision.usb, 'USB', return_value=Phone()), \
+                         patch.object(provision.usb, 'connect', side_effect=lambda *args: socket.create_connection(('127.0.0.1', port), timeout=2)):
+                        if fault:
+                            with self.assertRaises((ValueError, OSError, EOFError)):
+                                provision.receive('fixture', serial, state, output)
+                            self.assertFalse(output.exists())
+                        else:
+                            result = provision.receive('fixture', serial, state, output)
+                            self.assertEqual(result['sha256'], self.digest)
+                            self.assertEqual((output / 'state/desired/profile.json').read_bytes(), self.plain)
+                            self.assertEqual((output / 'identity.txt').stat().st_mode & 0o777, 0o600)
+                finally:
+                    worker.join(timeout=5)
+                    listener.close()
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(removed, [port])
+                self.assertFalse(list(self.case.glob('.provision-*')))
 
 
 if __name__ == '__main__':

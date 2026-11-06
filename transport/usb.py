@@ -184,6 +184,31 @@ def activate(stream, identifier, previous='0' * 64):
     return identifier
 
 
+def receive(usb, key, cert, phone, destination):
+    """Receive one selected vault generation, rejecting a concurrent switch."""
+    destination = outside_git(destination)
+    if destination.exists():
+        raise FileExistsError(destination)
+    private_directory(destination.parent)
+    port = usb.forward()
+    try:
+        with tempfile.TemporaryDirectory(prefix='.provision-', dir=destination.parent) as temporary:
+            selected = Path(temporary) / 'vault.fpe'
+            with connect(port, key, cert, phone) as stream:
+                identifier = current(stream)
+            if identifier == '0' * 64:
+                raise ValueError('phone has no provisioned vault')
+            with connect(port, key, cert, phone) as stream:
+                pull(stream, identifier, selected)
+            with connect(port, key, cert, phone) as stream:
+                if current(stream) != identifier:
+                    raise ValueError('phone vault changed during transfer; retry')
+            os.link(selected, destination)
+        return identifier
+    finally:
+        usb.remove(port)
+
+
 class USB:
     def __init__(self, adb, serial, app=APP):
         self.command = [str(adb), '-s', serial]
@@ -218,6 +243,8 @@ def main():
     commands = parser.add_subparsers(dest='action', required=True)
     commands.add_parser('pair')
     commands.add_parser('current')
+    receive_command = commands.add_parser('receive')
+    receive_command.add_argument('destination', type=Path)
     select = commands.add_parser('activate')
     select.add_argument('sha256')
     select.add_argument('--previous', default='0' * 64)
@@ -265,6 +292,10 @@ def main():
         return
     if not pin.exists():
         raise ValueError('pair this phone before transferring state')
+    if args.action == 'receive':
+        selected = receive(usb, key, cert, pin.read_bytes(), args.destination)
+        print('TRANSFER=VERIFIED\nSHA256=' + selected)
+        return
     port = usb.forward()
     try:
         with connect(port, key, cert, pin.read_bytes()) as stream:
