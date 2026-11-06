@@ -28,7 +28,7 @@ sudo pacman -Syu --needed base-devel python
 build=$(mktemp -d "${TMPDIR:-/tmp}/frankenstein-build.XXXXXXXX")
 # Preserve the build directory and packages for inspection or native pacman -U.
 printf 'BUILD_DIRECTORY=%s\n' "$build"
-cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" "$root/packaging" "$root/licenses" "$root/installer" "$root/vault" "$root/VERSION" "$root/LICENSE" "$build/"
+cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" "$root/packaging" "$root/licenses" "$root/installer" "$root/vault" "$root/transport" "$root/VERSION" "$root/LICENSE" "$build/"
 cd -- "$build/packaging"
 makepkg --syncdeps --cleanbuild
 packages=()
