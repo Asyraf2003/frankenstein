@@ -115,13 +115,24 @@ def chroot(*args, **kwargs):
 
 def verify_payload():
     manifest = json.loads((PAYLOAD / 'packages.json').read_text())
-    if set(manifest) != {'version', 'packages'} or not re.fullmatch(r'\d+\.\d+\.\d+', manifest['version']):
+    if not isinstance(manifest, dict) or set(manifest) != {'version', 'packages'} or not isinstance(manifest['version'], str) or not re.fullmatch(r'\d+\.\d+\.\d+', manifest['version']):
         raise Error('invalid engine manifest')
     packages = manifest['packages']
-    if len(packages) != 2 or not all(re.fullmatch(r'frankenstein-(core|openbox)-[A-Za-z0-9_.+-]+\.pkg\.tar\.zst', n) for n in packages):
+    if not isinstance(packages, dict) or len(packages) != 2:
         raise Error('expected core and Openbox package artifacts')
+    roles = set()
     for name, digest in packages.items():
-        with (PAYLOAD / 'packages' / name).open('rb') as stream:
+        match = re.fullmatch(r'frankenstein-(core|openbox)-' + re.escape(manifest['version']) + r'-[1-9][0-9]*-any\.pkg\.tar\.zst', name)
+        if not match or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+            raise Error('package role, version or checksum is invalid')
+        roles.add(match.group(1))
+    if roles != {'core', 'openbox'}:
+        raise Error('expected distinct core and Openbox packages')
+    for name, digest in packages.items():
+        artifact = PAYLOAD / 'packages' / name
+        if artifact.is_symlink() or not artifact.is_file():
+            raise Error('package artifact must be a regular file')
+        with artifact.open('rb') as stream:
             if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
                 raise Error('engine package integrity check failed')
     return manifest

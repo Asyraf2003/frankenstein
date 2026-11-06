@@ -85,6 +85,18 @@ class Installer(unittest.TestCase):
             with self.assertRaises(installer.Error):
                 installer.verify_payload()
 
+    def test_duplicate_roles_and_version_drift_fail_before_opening_packages(self):
+        for second in ('frankenstein-core-0.2.0-2-any.pkg.tar.zst',
+                       'frankenstein-openbox-0.1.0-1-any.pkg.tar.zst', '../outside.pkg.tar.zst'):
+            with self.subTest(second=second), tempfile.TemporaryDirectory() as temp, \
+                 patch.object(installer, 'PAYLOAD', Path(temp)):
+                manifest = {'version': '0.2.0', 'packages': {
+                    'frankenstein-core-0.2.0-1-any.pkg.tar.zst': 'a' * 64, second: 'b' * 64}}
+                (Path(temp) / 'packages.json').write_text(json.dumps(manifest))
+                # No package directory exists: failure must come from manifest validation.
+                with self.assertRaises(installer.Error):
+                    installer.verify_payload()
+
     def test_failure_unmounts_before_closing_and_never_announces_success(self):
         calls = []
         def run(*args, **kwargs):
