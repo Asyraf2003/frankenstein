@@ -185,6 +185,63 @@ class NativeOpening(unittest.TestCase):
             if path.is_file():
                 self.assertNotIn(b'AGE-SECRET-KEY-', path.read_bytes())
                 self.assertNotIn(b'dummy envelope seam only', path.read_bytes())
+        local_identity = self.case / 'device-key.txt'
+        subprocess.run(['age-keygen', '--output', str(local_identity)], check=True, capture_output=True)
+        routine = ('import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+                   'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                   'print(backup.capture("fixture/state",Path(sys.argv[3]),Path(sys.argv[4]),'
+                   'json.loads(Path(sys.argv[5]).read_text()),Path(sys.argv[6]),sys.argv[7]))')
+        result = subprocess.run([sys.executable, '-c', routine, str(ROOT / 'vault'), str(remote),
+            str(git_restored), str(local_identity), str(context_file), str(self.folder), self.expected],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, start_new_session=True, timeout=30)
+        self.assertEqual(result.returncode, 0, 'unattended capture failed; transcript withheld')
+        digest = result.stdout.strip()
+        self.assertRegex(digest, r'^[0-9a-f]{64}$')
+        race = '''import sys,json
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import backup
+import recovery_kit as kit
+backup.repository=lambda name:(sys.argv[2],"main")
+original=backup.command
+competing=[]
+def command(args,cwd=None):
+    if args[:2]==['git','push']:
+        seed=Path(sys.argv[8])
+        original(['git','pull','--ff-only'],seed)
+        (seed/'other-device.txt').write_text('concurrent device tuning')
+        original(['git','add','other-device.txt'],seed)
+        original(['git','-c','user.name=Fixture','-c','user.email=fixture@localhost',
+                  'commit','-m','concurrent update'],seed)
+        original(['git','push','origin','main'],seed)
+        competing.append(original(['git','rev-parse','HEAD'],seed))
+    return original(args,cwd)
+backup.command=command
+try:
+    backup.capture('fixture/state',Path(sys.argv[3]),Path(sys.argv[4]),
+                   json.loads(Path(sys.argv[5]).read_text()),Path(sys.argv[6]),sys.argv[7])
+except kit.KitError:
+    assert competing and original(['git','--git-dir',sys.argv[2],'rev-parse','main'])==competing[0]
+    print('CONCURRENT_UPDATE_PRESERVED')
+else:
+    raise AssertionError('concurrent update was silently replaced')
+'''
+        result = subprocess.run([sys.executable, '-c', race, str(ROOT / 'vault'), str(remote),
+            str(git_restored), str(local_identity), str(context_file), str(self.folder), self.expected, str(seed)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, start_new_session=True, timeout=30)
+        self.assertEqual(result.returncode, 0, 'concurrent push test failed; transcript withheld')
+        self.assertIn('CONCURRENT_UPDATE_PRESERVED', result.stdout)
+        # Remove the device key. Only the independently wrapped recovery key remains.
+        local_identity.unlink()
+        recovered_again = self.case / 'routine-backup-recovered'
+        recover = ('import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+                   'import backup;backup.repository=lambda name:(sys.argv[2],"main");'
+                   'backup.restore("fixture/state",sys.argv[3],Path(sys.argv[4]));print("RECOVERED")')
+        code, output, supplied = tty(['-c', recover, ROOT / 'vault', remote, digest, recovered_again],
+                                    [self.secret])
+        self.assertEqual(code, 0, 'unattended backup recovery failed; transcript withheld')
+        self.assertEqual(supplied, 1)
+        self.assertEqual((recovered_again / 'projects/dummy.txt').read_text(), 'dummy envelope seam only\n')
 
     def test_copy_uses_native_verify_and_public_recipient_without_secret_entry(self):
         code, output, _ = tty([SCRIPT, 'verify', '--opening', self.folder,

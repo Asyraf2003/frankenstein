@@ -23,7 +23,7 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   engine stage vMAJOR.MINOR.PATCH NEW_DIRECTORY
   vault create|inspect|promote|restore [ARGS] (use vault --help for explicit input paths)
   recovery-key enroll|verify|recipient [ARGS] (native age passphrase prompt)
-  vault-backup --repository OWNER/PRIVATE_REPO publish|restore [ARGS]
+  vault-backup --repository OWNER/PRIVATE_REPO capture|publish|restore [ARGS]
 
 Install/remove/update use pacman; installation performs a full system upgrade.
 Power actions use systemd/logind and its normal authorization and inhibitors.

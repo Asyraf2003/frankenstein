@@ -1,6 +1,5 @@
 """Private Git backup adapter. Only verified ciphertext and public recovery metadata enter Git."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,6 +35,28 @@ def repository(name):
 
 def publish(repo, candidate, identity, context, capsule, capsule_digest):
     """Validate a stable copy before cloning; preserve all unrelated private repo files."""
+    return _publish(repo, candidate, identity, context, capsule, capsule_digest, True)
+
+
+def capture(repo, staging, identity, context, capsule, capsule_digest):
+    """Routine backup from trusted local identity; recovery passphrase is not requested.
+
+    The selected capsule must have been verified during initial enrollment. This
+    producer supplies its pinned recipient directly to native age for EVERY backup.
+    Arbitrary imported ciphertext still goes through publish's emergency-key proof.
+    """
+    repository(repo)
+    staging = kit.outside_git(staging)
+    recovery = opening.inspect(capsule, capsule_digest)
+    local_recipient = opening.native(['age-keygen', '-y', str(kit.safe(identity))]).decode().strip()
+    kit.require(re.fullmatch('age1[0-9a-z]{58}', local_recipient), 'LOCAL_IDENTITY_INVALID')
+    with tempfile.TemporaryDirectory(prefix='frankenstein-capture-') as temporary:
+        candidate = Path(temporary) / 'vault.age'
+        kit.create(staging, context, [local_recipient, recovery['recipient']], candidate)
+        return _publish(repo, candidate, identity, context, capsule, capsule_digest, False)
+
+
+def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify_emergency):
     url, branch = repository(repo)
     with tempfile.TemporaryDirectory(prefix='frankenstein-private-backup-') as temporary:
         root = Path(temporary)
@@ -53,7 +74,8 @@ def publish(repo, candidate, identity, context, capsule, capsule_digest):
         opening.inspect(recovery, capsule_digest)
         # Prove that THIS emergency key opens THIS backup, not just a separate probe.
         # Native age requests its passphrase on the owner's controlling terminal.
-        kit.inspect(staged / 'vault.age', recovery / 'identity.age', context)
+        if verify_emergency:
+            kit.inspect(staged / 'vault.age', recovery / 'identity.age', context)
         manifest = {'schema': 1, 'ciphertext_sha256': proof['archive_sha256'],
                     'context': kit.context(context), 'recovery_manifest_sha256': capsule_digest}
         (staged / 'backup.json').write_bytes(kit.encoded(manifest))
@@ -126,12 +148,20 @@ def main():
     for name in ('candidate', 'identity', 'context', 'capsule'):
         backup.add_argument('--' + name, type=Path, required=True)
     backup.add_argument('--capsule-sha256', required=True)
+    routine = sub.add_parser('capture')
+    for name in ('staging', 'identity', 'context', 'capsule'):
+        routine.add_argument('--' + name, type=Path, required=True)
+    routine.add_argument('--capsule-sha256', required=True)
     recover = sub.add_parser('restore')
     recover.add_argument('--sha256', required=True)
     recover.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.action == 'publish':
+        if args.action == 'capture':
+            digest = capture(args.repository, args.staging, args.identity,
+                             kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256)
+            print('PRIVATE_BACKUP=' + digest)
+        elif args.action == 'publish':
             digest = publish(args.repository, args.candidate, args.identity,
                              kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256)
             print('PRIVATE_BACKUP=' + digest)
