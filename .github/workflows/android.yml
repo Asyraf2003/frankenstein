@@ -23,7 +23,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: go -C vault/native build -buildvcs=false -o out/bridge .
       - run: python3 tests/native-portable.py
-      - run: sdkmanager 'ndk;28.2.13676358'
+      - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358"'
       - run: bash android/build-native.sh
       - run: bash android/gradlew -p android --no-daemon :app:assembleDebug :app:testDebugUnitTest
       - run: python3 -m unittest discover -s tests -p test_usb.py -v
