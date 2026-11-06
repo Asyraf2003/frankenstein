@@ -36,6 +36,7 @@ package_frankenstein-core() {
     install -Dm644 vault/recovery_kit.py "$pkgdir/usr/lib/frankenstein/vault/recovery_kit.py"
     install -Dm644 vault/recovery_opening.py "$pkgdir/usr/lib/frankenstein/vault/recovery_opening.py"
     install -Dm644 vault/backup.py "$pkgdir/usr/lib/frankenstein/vault/backup.py"
+    install -Dm644 vault/portable.py "$pkgdir/usr/lib/frankenstein/vault/portable.py"
     install -Dm644 transport/usb.py "$pkgdir/usr/lib/frankenstein/transport/usb.py"
     install -Dm644 lib/first_boot.py "$pkgdir/usr/lib/frankenstein/first_boot.py"
     install -Dm644 assets/frankenstein-first-boot.service "$pkgdir/usr/lib/systemd/system/frankenstein-first-boot.service"

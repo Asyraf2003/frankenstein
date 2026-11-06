@@ -317,19 +317,24 @@ def materialize(candidate, identity, expected, destination, expected_archive):
         sync_directory(files)
         # Linux/Android native atomic exclusive rename: a concurrent empty
         # destination must not be overwritten either. Fail closed if unavailable.
-        libc = ctypes.CDLL(None, use_errno=True)
-        rename = getattr(libc, 'renameat2', None)
-        require(rename is not None, 'ATOMIC_RESTORE_UNAVAILABLE')
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                           ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        if rename(-100, os.fsencode(files), -100, os.fsencode(destination), 1):
-            code = ctypes.get_errno()
-            if code == errno.EEXIST:
-                raise KitError('MATERIALIZED_OUTPUT_EXISTS')
-            raise OSError(code, 'atomic restore publication failed')
-        sync_directory(destination.parent)
+        publish_directory(files, destination)
     return proof
+
+
+def publish_directory(source, destination):
+    """Publish a fully verified private directory without replacing any target."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, 'renameat2', None)
+    require(rename is not None, 'ATOMIC_RESTORE_UNAVAILABLE')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                       ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise KitError('MATERIALIZED_OUTPUT_EXISTS')
+        raise OSError(code, 'atomic restore publication failed')
+    sync_directory(destination.parent)
 
 
 def sync_directory(path):

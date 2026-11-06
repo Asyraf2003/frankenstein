@@ -11,8 +11,22 @@ android {
         testInstrumentationRunner 'org.frankenstein.companion.StorageInstrumentation'
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    sourceSets {
+        main.jniLibs.srcDir layout.buildDirectory.dir('generated/native/jniLibs')
+        main.assets.srcDir layout.buildDirectory.dir('generated/native/assets')
+        androidTest.assets.srcDir layout.buildDirectory.dir('generated/test-fixtures')
+    }
+    packaging { jniLibs { useLegacyPackaging = true } }
     buildTypes { debug { applicationIdSuffix '.dev' } }
 }
+tasks.register('requireNativeVault') {
+    doLast {
+        if (!layout.buildDirectory.file('generated/native/jniLibs/arm64-v8a/libfrankenstein_vault.so').get().asFile.exists()) {
+            throw new GradleException('Run android/build-native.sh with the Android NDK before building the companion.')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'requireNativeVault' }
 dependencies {
     implementation 'com.google.crypto.tink:tink-android:1.24.0'
     testImplementation 'junit:junit:4.13.2'

@@ -36,7 +36,68 @@ public final class StorageInstrumentation extends Instrumentation {
             boolean rejected = false;
             try { reopened.verify(id); } catch (IOException | GeneralSecurityException expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Tampered object accepted");
-            result.putString("result", "PASS: AndroidKeyStore persistence, streaming roundtrip, directory sync, tamper rejection");
+            byte[] fixture;
+            try (InputStream input = getContext().getAssets().open("portable.fpe")) {
+                ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    if (bytesOut.size() + count > 4 * 1024 * 1024) throw new AssertionError("Fixture too large");
+                    bytesOut.write(buffer, 0, count);
+                }
+                fixture = bytesOut.toByteArray();
+            }
+            NativeVault vault = new NativeVault(getTargetContext());
+            org.json.JSONObject opened = vault.inspect(new ByteArrayInputStream(fixture), fixture.length, "desired/profile.json");
+            byte[] profile = android.util.Base64.decode(opened.getJSONObject("selected").getString("base64"), android.util.Base64.NO_WRAP);
+            if (!new String(profile, java.nio.charset.StandardCharsets.UTF_8).contains("\"username\":\"fixture\"")) throw new AssertionError("Native age opening mismatch");
+            File scratch = new File(getTargetContext().getNoBackupFilesDir(), "test-portable-" + java.util.UUID.randomUUID());
+            if (!scratch.mkdir()) throw new IOException("Cannot reserve fixture directory");
+            try {
+                android.content.Context isolated = new android.content.ContextWrapper(getTargetContext()) {
+                    @Override public File getNoBackupFilesDir() { return scratch; }
+                };
+                BlobStore isolatedStore = LocalStorage.open(isolated);
+                NativeVault isolatedVault = new NativeVault(isolated);
+                String selectedId = Identity.hex(MessageDigest.getInstance("SHA-256").digest(fixture));
+                isolatedStore.put(selectedId, fixture.length, new ByteArrayInputStream(fixture));
+                java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+                java.util.concurrent.ExecutorService writers = java.util.concurrent.Executors.newFixedThreadPool(2);
+                try {
+                    java.util.concurrent.Callable<Boolean> activate = () -> {
+                        start.await();
+                        try {
+                            new NativeVault(isolated).activate(isolatedStore, selectedId, NativeVault.EMPTY);
+                            return true;
+                        } catch (IOException expected) {
+                            if (!expected.getMessage().startsWith("Vault conflict:")) throw expected;
+                            return false;
+                        }
+                    };
+                    java.util.concurrent.Future<Boolean> first = writers.submit(activate);
+                    java.util.concurrent.Future<Boolean> second = writers.submit(activate);
+                    start.countDown();
+                    boolean firstWon = first.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                    boolean secondWon = second.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                    if (firstWon == secondWon) throw new AssertionError("Exactly one concurrent activation must win");
+                } finally { writers.shutdownNow(); }
+                if (!isolatedVault.current().equals(selectedId)) throw new AssertionError("Vault selection not retained");
+                boolean conflict = false;
+                try { isolatedVault.activate(isolatedStore, selectedId, NativeVault.EMPTY); }
+                catch (IOException expected) { conflict = true; }
+                if (!conflict || !isolatedVault.current().equals(selectedId)) throw new AssertionError("Concurrent selection was overwritten");
+            } finally {
+                try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(scratch.toPath())) {
+                    for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator)
+                        Files.delete(path);
+                }
+            }
+            fixture[fixture.length - 1] ^= 1;
+            rejected = false;
+            try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
+            catch (Exception expected) { rejected = true; }
+            if (!rejected) throw new AssertionError("Native age accepted altered fixture");
+            result.putString("result", "PASS: AndroidKeyStore persistence, streaming roundtrip, directory sync, tamper rejection, native age opening, final authentication, generation conflict preservation");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());

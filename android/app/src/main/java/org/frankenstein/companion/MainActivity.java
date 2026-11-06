@@ -17,7 +17,15 @@ public final class MainActivity extends Activity {
     private boolean destroyed;
     private boolean foreground;
     private int revision;
-    @Override protected void onStart() { super.onStart(); foreground = true; }
+    private boolean vaultUnlocked;
+    private X509Certificate approvedPeer;
+    private long approvedAt;
+    private boolean startingPeer;
+    @Override protected void onStart() {
+        super.onStart();
+        foreground = true;
+        resumeApprovedPeer();
+    }
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -27,18 +35,28 @@ public final class MainActivity extends Activity {
         status = new TextView(this);
         status.setTextSize(18);
         layout.addView(status);
-        setContentView(layout);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
+        setContentView(scroll);
         show(getIntent());
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); show(intent); }
     private void show(Intent intent) {
+        // Returning via the launcher resumes this explicitly approved in-memory
+        // session. An untrusted pairing intent still goes through owner approval.
+        if (intent.getStringExtra("peer_certificate") == null && approvedPeer != null) {
+            resumeApprovedPeer();
+            return;
+        }
         revision++;
+        vaultUnlocked = false;
+        approvedPeer = null;
         if (server != null) { server.close(); server = null; }
         pending = null;
         while (layout.getChildCount() > 1) layout.removeViewAt(1);
         status.setText("Frankenstein\n\nConnect USB and request pairing from the PC.\n\nDevelopment build; keep your independent recovery backup.");
         String encoded = intent.getStringExtra("peer_certificate");
-        if (encoded == null) return;
+        if (encoded == null) { addVaultButton(); return; }
         try {
             if (encoded.length() > 8192) throw new IOException();
             X509Certificate certificate = (X509Certificate) CertificateFactory.getInstance("X.509")
@@ -68,9 +86,28 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 2) {
+            if (result == RESULT_OK) { vaultUnlocked = true; loadVault(null); }
+            else show(new Intent());
+            return;
+        }
         X509Certificate peer = pending;
         pending = null;
         if (request != 1 || result != RESULT_OK || peer == null) { show(new Intent()); return; }
+        approvedPeer = peer;
+        approvedAt = android.os.SystemClock.elapsedRealtime();
+        resumeApprovedPeer();
+    }
+    private void resumeApprovedPeer() {
+        if (!foreground || approvedPeer == null || server != null || startingPeer) return;
+        KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        if (keyguard.isDeviceLocked() || android.os.SystemClock.elapsedRealtime() - approvedAt > 15 * 60 * 1000L) {
+            approvedPeer = null;
+            show(new Intent());
+            return;
+        }
+        X509Certificate peer = approvedPeer;
+        startingPeer = true;
         while (layout.getChildCount() > 1) layout.removeViewAt(1);
         status.setText("Protecting local storage…");
         int approvedRevision = revision;
@@ -78,23 +115,91 @@ public final class MainActivity extends Activity {
             try {
                 BlobStore store = LocalStorage.open(this);
                 runOnUiThread(() -> {
-                    if (destroyed || !foreground || revision != approvedRevision) return;
+                    startingPeer = false;
+                    if (destroyed || !foreground) return;
+                    if (revision != approvedRevision || approvedPeer != peer) { resumeApprovedPeer(); return; }
                     try {
-                        server = new PeerServer(peer, store, message -> runOnUiThread(() -> status.setText(message)));
+                        server = new PeerServer(peer, store, new NativeVault(this), message -> runOnUiThread(() -> status.setText(message)));
                         status.setText("Device accepted. Ready for USB transfer.\n\nKeep this screen open. Closing it stops access.");
                         Button stop = new Button(this);
                         stop.setText("Stop device access");
-                        stop.setOnClickListener(view -> show(new Intent()));
+                        stop.setOnClickListener(view -> { approvedPeer = null; show(new Intent()); });
                         layout.addView(stop);
                     } catch (Exception error) { status.setText("USB listener could not start. Access remains closed."); }
                 });
-            } catch (Exception error) { runOnUiThread(() -> status.setText("Protected storage unavailable. Access remains closed.")); }
+            } catch (Exception error) { runOnUiThread(() -> {
+                startingPeer = false;
+                if (foreground && revision == approvedRevision) status.setText("Protected storage unavailable. Access remains closed.");
+            }); }
         }).start();
     }
     @Override protected void onStop() {
         super.onStop();
         foreground = false;
-        if (server != null) { server.close(); server = null; status.setText("Access stopped. Request pairing again to reconnect."); }
+        if (vaultUnlocked) {
+            vaultUnlocked = false;
+            revision++;
+            while (layout.getChildCount() > 1) layout.removeViewAt(1);
+            status.setText("Vault locked.");
+            addVaultButton();
+        }
+        if (server != null) { server.close(); server = null; status.setText("USB access stopped while the app is closed."); }
+    }
+    private void addVaultButton() {
+        Button open = new Button(this);
+        open.setText("Open my vault");
+        open.setFilterTouchesWhenObscured(true);
+        open.setOnClickListener(view -> {
+            KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+            Intent unlock = keyguard.createConfirmDeviceCredentialIntent("Open Frankenstein vault", "Confirm ownership");
+            if (unlock != null) startActivityForResult(unlock, 2);
+            else status.setText("Set a device screen lock before opening the vault.");
+        });
+        layout.addView(open);
+    }
+    private void loadVault(String selected) {
+        int requestedRevision = revision;
+        status.setText("Verifying your vault…");
+        new Thread(() -> {
+            try {
+                NativeVault vault = new NativeVault(this);
+                String id = vault.current();
+                if (id.equals(NativeVault.EMPTY)) throw new IOException("No provisioned vault");
+                org.json.JSONObject result = vault.inspect(LocalStorage.open(this), id, selected);
+                runOnUiThread(() -> {
+                    if (!foreground || !vaultUnlocked || revision != requestedRevision) return;
+                    while (layout.getChildCount() > 1) layout.removeViewAt(1);
+                    try {
+                        if (selected != null) {
+                            byte[] bytes = Base64.decode(result.getJSONObject("selected").getString("base64"), Base64.NO_WRAP);
+                            status.setText(selected + "\n\n" + new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+                            java.util.Arrays.fill(bytes, (byte)0);
+                            Button back = new Button(this);
+                            back.setText("Back to vault");
+                            back.setOnClickListener(view -> loadVault(null));
+                            layout.addView(back);
+                        } else {
+                            org.json.JSONObject files = result.getJSONObject("manifest").getJSONObject("files");
+                            status.setText("Vault ready\n" + files.length() + " verified items. This phone can provide state to a new PC.");
+                            java.util.Iterator<String> names = files.keys();
+                            while (names.hasNext()) {
+                                String name = names.next();
+                                if (files.getJSONObject(name).getLong("size") > 1024 * 1024) continue;
+                                Button entry = new Button(this);
+                                entry.setText(name);
+                                entry.setOnClickListener(view -> { if (vaultUnlocked) loadVault(name); });
+                                layout.addView(entry);
+                            }
+                        }
+                    } catch (Exception error) { status.setText("Vault result could not be displayed."); }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (foreground && vaultUnlocked && revision == requestedRevision)
+                        status.setText("Vault unavailable. Receive a provisioning package or restore your encrypted backup.");
+                });
+            }
+        }).start();
     }
     @Override protected void onDestroy() {
         destroyed = true;

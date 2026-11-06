@@ -11,7 +11,7 @@ final class PeerServer implements AutoCloseable {
     private final SSLServerSocket listener;
     private volatile SSLSocket current;
     private volatile boolean stopped;
-    PeerServer(X509Certificate peer, BlobStore store, java.util.function.Consumer<String> status) throws Exception {
+    PeerServer(X509Certificate peer, BlobStore store, NativeVault vault, java.util.function.Consumer<String> status) throws Exception {
         listener = (SSLServerSocket) Identity.context(peer).getServerSocketFactory().createServerSocket();
         listener.setReuseAddress(true);
         listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 1);
@@ -49,6 +49,15 @@ final class PeerServer implements AutoCloseable {
                             if (object.read() != -1 || !Identity.hex(digest.digest()).equals(id)) throw new IOException("Corrupt storage");
                             output.writeByte(0);
                         }
+                    } else if (operation == 3) {
+                        output.writeByte(0);
+                        output.write(vault.current().getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    } else if (operation == 4) {
+                        byte[] previous = new byte[32];
+                        input.readFully(previous);
+                        vault.activate(store, id, Identity.hex(previous));
+                        output.writeByte(0);
+                        status.accept("Portable vault verified and ready for a new PC.");
                     } else throw new IOException("Unknown operation");
                     output.flush();
                     status.accept("Transfer verified. Ready.");

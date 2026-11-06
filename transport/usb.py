@@ -164,6 +164,26 @@ def pull(stream, identifier, destination):
     return identifier
 
 
+def current(stream):
+    stream.sendall(b'FRK1\x03' + bytes(32))
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('phone current vault unavailable')
+    identifier = read_exact(stream, 64).decode('ascii')
+    if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier):
+        raise ValueError('invalid current vault response')
+    return identifier
+
+
+def activate(stream, identifier, previous='0' * 64):
+    if any(len(value) != 64 or any(c not in '0123456789abcdef' for c in value)
+           for value in (identifier, previous)):
+        raise ValueError('invalid vault generation')
+    stream.sendall(b'FRK1\x04' + bytes.fromhex(identifier) + bytes.fromhex(previous))
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('vault verification or generation conflict')
+    return identifier
+
+
 class USB:
     def __init__(self, adb, serial, app=APP):
         self.command = [str(adb), '-s', serial]
@@ -197,6 +217,10 @@ def main():
     parser.add_argument('--app', default=APP)
     commands = parser.add_subparsers(dest='action', required=True)
     commands.add_parser('pair')
+    commands.add_parser('current')
+    select = commands.add_parser('activate')
+    select.add_argument('sha256')
+    select.add_argument('--previous', default='0' * 64)
     put = commands.add_parser('push')
     put.add_argument('source', type=Path)
     get = commands.add_parser('pull')
@@ -244,7 +268,14 @@ def main():
     port = usb.forward()
     try:
         with connect(port, key, cert, pin.read_bytes()) as stream:
-            selected = push(stream, args.source) if args.action == 'push' else pull(stream, args.sha256, args.destination)
+            if args.action == 'push':
+                selected = push(stream, args.source)
+            elif args.action == 'pull':
+                selected = pull(stream, args.sha256, args.destination)
+            elif args.action == 'activate':
+                selected = activate(stream, args.sha256, args.previous)
+            else:
+                selected = current(stream)
         print('TRANSFER=VERIFIED\nSHA256=' + selected)
     finally:
         usb.remove(port)
