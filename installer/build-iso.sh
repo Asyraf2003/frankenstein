@@ -12,7 +12,7 @@ for tool in mkarchiso makepkg runuser python; do command -v "$tool" >/dev/null; 
 umask 022
 mkdir "$build/source" "$build/out"
 cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" \
-    "$root/packaging" "$root/licenses" "$root/installer" "$root/LICENSE" "$root/VERSION" "$build/source/"
+    "$root/packaging" "$root/licenses" "$root/installer" "$root/vault" "$root/LICENSE" "$root/VERSION" "$build/source/"
 # Package only scripts and configuration. No large compilation or target-side build.
 chmod 755 "$build" "$build/source"
 chown -R nobody:nobody "$build/source"
