@@ -50,7 +50,8 @@ class VM:
     def command(self, command, timeout=120):
         token = secrets.token_hex(12)
         self.child.sendline(command + "; printf '\\n" + token + ":%s\\n' \"$?\"")
-        self.child.expect(token + r':(\d+)\r?\n', timeout=timeout)
+        # Guest CRLF can pass through a host PTY as CRCRLF.
+        self.child.expect(token + r':(\d+)\r*\n', timeout=timeout)
         if self.child.match.group(1) != '0':
             raise RuntimeError('guest command failed: ' + command)
 
@@ -105,6 +106,8 @@ def main():
         vm.child.expect(r'login:')
         vm.child.sendline('root')
         vm.child.expect(r'# ')
+        vm.child.sendline('exec bash --noprofile --norc')
+        vm.child.expect(r'bash-[^\r\n]*# ')
         vm.command('test -d /sys/firmware/efi && test -d /run/archiso')
         config = json.dumps({'username': 'proof', 'hostname': 'proof', 'timezone': 'UTC',
                              'packages': ['wmctrl', 'xorg-xprop']})
@@ -156,6 +159,12 @@ def main():
             'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome'],
             'not_verified': ['LTS recovery boot', 'physical hardware', 'USB pairing', 'vault']}, indent=2) + '\n')
         print('CLEAN_DISK_VM_PROOF=PASS')
+    except Exception:
+        if vm.log:
+            vm.log.flush()
+        for path in state.glob('*.log'):
+            print(path.name + '\n' + path.read_text(errors='replace')[-16000:])
+        raise
     finally:
         vm.stop()
 
