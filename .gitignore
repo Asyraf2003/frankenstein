@@ -3,3 +3,7 @@ __pycache__/
 /out/
 /work/
 /vm-proof/
+/android/.gradle/
+/android/**/build/
+/android/local.properties
+/vault/native/out/

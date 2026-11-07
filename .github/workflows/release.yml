@@ -1,0 +1,78 @@
+name: Publish stable engine
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact VERSION to publish (operator authorization required)'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type publish VERSION to authorize this release'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: stable-engine-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.repository == 'Asyraf2003/frankenstein'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate selected version and integrated source
+        env:
+          SELECTED_VERSION: ${{ inputs.version }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          [[ "$SELECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$CONFIRMATION" = "publish $SELECTED_VERSION"
+          test "$(cat VERSION)" = "$SELECTED_VERSION"
+          test "$(bash -c 'source packaging/PKGBUILD; printf %s "$pkgver"')" = "$SELECTED_VERSION"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if git show-ref --verify --quiet "refs/tags/v$SELECTED_VERSION"; then exit 1; fi
+      - name: Native package and desktop regression checks
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          bash tests/container.sh
+          bash tests/container.sh openbox
+      - name: Build native packages
+        run: |
+          mkdir out
+          docker run --rm --mount "type=bind,src=$PWD,dst=/source,readonly" \
+            --mount "type=bind,src=$PWD/out,dst=/out" archlinux:base bash -euc '
+              pacman -Syu --noconfirm --needed base-devel python
+              useradd -m builder
+              cp -a /source /build
+              chown -R builder:builder /build
+              runuser -u builder -- bash -c "cd /build/packaging; makepkg --nodeps"
+              cp /build/packaging/*.pkg.tar.zst /out/
+            '
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          packages = {}
+          for path in Path('out').glob('*.pkg.tar.zst'):
+              with path.open('rb') as stream:
+                  packages[path.name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+          assert len(packages) == 2
+          Path('out/engine.json').write_text(json.dumps({'version': Path('VERSION').read_text().strip(), 'commit': os.environ['GITHUB_SHA'], 'packages': packages})+'\n')
+          PY
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: out/*
+      - name: Publish versioned packages (never PR images)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v$SELECTED_VERSION" out/* --target "$GITHUB_SHA" \
+            --title "Frankenstein $SELECTED_VERSION" --generate-notes --latest

@@ -71,7 +71,7 @@ def prepare(state, image):
             if info.issym() or info.islnk():
                 raise RuntimeError('source links refused: '+info.name)
             return info
-        for name in ('bootstrap', 'bin', 'lib', 'profiles', 'assets', 'tests', 'packaging', 'licenses', 'installer', 'VERSION', 'LICENSE'):
+        for name in ('bootstrap', 'bin', 'lib', 'profiles', 'assets', 'tests', 'packaging', 'licenses', 'installer', 'vault', 'transport', 'VERSION', 'LICENSE'):
             archive.add(ROOT/name, arcname=name, filter=public)
     (state/'Dockerfile').write_text(DOCKERFILE)
     (state/'.dockerignore').write_text('*\n!Dockerfile\n')
