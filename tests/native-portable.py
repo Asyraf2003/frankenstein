@@ -192,6 +192,36 @@ class Portable(unittest.TestCase):
             self.assertEqual(rejected.stdout, b'')
             self.assertEqual(rejected.stderr, b'VAULT_AMENDMENT_FAILED\n')
 
+    def test_google_amendment_preserves_github_identity_and_restores_on_pc(self):
+        original = self.bundle.read_bytes()
+        def header(bundle):
+            return json.loads(bundle[8:8 + struct.unpack('>I', bundle[4:8])[0]])
+        def amend(bundle, path, data):
+            request = kit.encoded({'path': path, 'base64': base64.b64encode(data).decode()})
+            result = subprocess.run([str(BRIDGE), 'amend-credential'],
+                input=struct.pack('>I', len(request)) + request + bundle, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, 'Credential amendment failed; private output withheld')
+            self.assertEqual(result.stderr, b'')
+            self.assertNotIn(data, result.stdout)
+            return result.stdout
+        github = b'{"fixture":"synthetic-github"}'
+        google = b'{"schema":1,"account":"fixture@example.test","refresh_token":"synthetic-google"}'
+        both = amend(amend(original, 'credentials/github.json', github), 'credentials/google-drive.json', google)
+        replacement = b'{"fixture":"synthetic-google-replacement"}'
+        latest = amend(both, 'credentials/google-drive.json', replacement)
+        for field in ('identity', 'context', 'recovery', 'recovery_manifest_sha256'):
+            self.assertTrue(header(original)[field] == header(latest)[field], 'Identity/recovery changed')
+        before = json.loads(self.native().stdout)['manifest']
+        bundle = self.case / 'google-paired.fpe'
+        bundle.write_bytes(latest)
+        after = json.loads(self.native(bundle).stdout)['manifest']
+        self.assertEqual(before['kit_id'], after['kit_id'])
+        restored = self.case / 'google-paired'
+        portable.restore(bundle, restored, kit.sha(bundle))
+        self.assertEqual((restored / 'state/credentials/github.json').read_bytes(), github)
+        self.assertEqual((restored / 'state/credentials/google-drive.json').read_bytes(), replacement)
+        self.assertEqual((restored / 'state/desired/profile.json').read_bytes(), self.plain)
+
     def test_recovery_zip_rejects_extra_paths_before_extracting(self):
         bad = self.case / 'traversal.zip'
         with zipfile.ZipFile(bad, 'w') as archive:
@@ -304,6 +334,13 @@ class Portable(unittest.TestCase):
         installer = module('native_installer', ROOT / 'installer/install.py')
         bundle = self.case / 'installation.fpe'
         digest = fixture.create(bundle, 'synthetic-account-disk-only', recovery=False, account_password='1234')
+        github = kit.encoded({'tokens': {'access_token': 'gho_synthetic_paired_installer'}})
+        request = kit.encoded({'path': 'credentials/github.json', 'base64': base64.b64encode(github).decode()})
+        amended = subprocess.run([str(BRIDGE), 'amend-credential'],
+            input=struct.pack('>I', len(request)) + request + bundle.read_bytes(), capture_output=True, timeout=30)
+        self.assertEqual(amended.returncode, 0, 'Fixture amendment failed; private output withheld')
+        bundle.write_bytes(amended.stdout)
+        digest = kit.sha(bundle)
         args = SimpleNamespace(phone=None, provisioning_bundle=bundle, sha256=digest)
         staging = self.case / 'bootstrap'
         staging.mkdir()
@@ -311,6 +348,9 @@ class Portable(unittest.TestCase):
         self.assertEqual(config['username'], 'proof')
         self.assertEqual(password, '1234')
         self.assertEqual(disk, 'synthetic-account-disk-only')
+        import releases
+        with patch.dict(os.environ, {}, clear=True), releases.owner_credentials(supplied['github_credentials']):
+            self.assertEqual(os.environ['GH_TOKEN'], 'gho_synthetic_paired_installer')
         supplied['recheck']()
         restored = self.case / 'encrypted-root-fixture'
         supplied['restore'](restored)

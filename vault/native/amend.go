@@ -31,7 +31,13 @@ func amend(source io.Reader) ([]byte, error) {
 		return nil, invalid
 	}
 	input, err := object(request)
-	if err != nil || !keys(input, "path", "base64") || text(input["path"]) != "credentials/github.json" {
+	if err != nil || !keys(input, "path", "base64") {
+		return nil, invalid
+	}
+	path := text(input["path"])
+	// Only these account credentials may be amended by phone onboarding.
+	// Never expose a general-purpose write into setup, recovery or vault state.
+	if path != "credentials/github.json" && path != "credentials/google-drive.json" {
 		return nil, invalid
 	}
 	content, err := base64.StdEncoding.Strict().DecodeString(text(input["base64"]))
@@ -92,7 +98,7 @@ func amend(source io.Reader) ([]byte, error) {
 		if err != nil {
 			return nil, invalid
 		}
-		if member.Name == "manifest.json" || member.Name == "payload/credentials/github.json" {
+		if member.Name == "manifest.json" || member.Name == "payload/"+path {
 			continue
 		}
 		if member.Size > maxAmend-int64(archive.Len())-4096 {
@@ -106,7 +112,7 @@ func amend(source io.Reader) ([]byte, error) {
 		}
 	}
 	files := manifest["files"].(map[string]any)
-	files["credentials/github.json"] = record{"credentials", int64(len(content)), sha(content)}
+	files[path] = record{"credentials", int64(len(content)), sha(content)}
 	manifest["created_at"] = time.Now().UTC().Format(time.RFC3339)
 	metadata, err := json.Marshal(manifest)
 	if err != nil || len(metadata) > maxManifest {
@@ -115,7 +121,7 @@ func amend(source io.Reader) ([]byte, error) {
 	for _, item := range []struct {
 		name string
 		data []byte
-	}{{"payload/credentials/github.json", content}, {"manifest.json", metadata}} {
+	}{{"payload/"+path, content}, {"manifest.json", metadata}} {
 		if archive.Len()+len(item.data)+4096 > maxAmend {
 			return nil, invalid
 		}

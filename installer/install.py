@@ -17,7 +17,7 @@ TARGET = Path('/mnt/frankenstein')
 MAPPER = 'frankenstein-root'
 BASE = ['base', 'linux', 'linux-lts', 'linux-firmware', 'mkinitcpio', 'cryptsetup',
         'e2fsprogs', 'dosfstools', 'sudo', 'networkmanager', 'python', 'git',
-        'age', 'android-tools', 'openssl', 'github-cli',
+        'age', 'android-tools', 'openssl', 'github-cli', 'rclone',
         'openbox', 'xorg-server', 'xorg-xinit', 'xorg-xsetroot', 'dbus', 'python-pyxdg',
         'xterm', 'thunar', 'rofi', 'dunst', 'ttf-dejavu', 'playerctl', 'pipewire',
         'pipewire-pulse', 'wireplumber', 'polkit']
@@ -141,7 +141,7 @@ def verify_payload(manifest=None, directory=None):
     return manifest
 
 
-def select_engine(tag, experimental, temporary):
+def select_engine(tag, experimental, temporary, paired_credentials=None):
     if bool(tag) == bool(experimental):
         raise Error('select --engine-release vMAJOR.MINOR.PATCH, or explicitly --experimental-engine for testing')
     if experimental:
@@ -151,11 +151,11 @@ def select_engine(tag, experimental, temporary):
     sys.path.insert(0, str(library))
     import releases
     try:
-        with releases.owner_credentials():
+        with releases.owner_credentials(paired_credentials):
             directory = releases.stage(tag, Path(temporary) / 'selected-engine')
         attested = releases.validate_manifest(json.loads((directory / 'engine.json').read_text()), tag)
     except releases.Error as error:
-        raise Error(str(error) + '; authenticate gh on the live system if required; no experimental fallback') from None
+        raise Error(str(error) + '; connect or refresh GitHub on the paired phone, then retry; no experimental fallback') from None
     manifest = verify_payload({k: attested[k] for k in ('version', 'packages')}, directory)
     # Check actual native metadata, not just names on release assets.
     for name in manifest['packages']:
@@ -243,6 +243,8 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
                   f'options rd.luks.name={uuid}={MAPPER} root=/dev/mapper/{MAPPER} rw\n')
         user = config['username']
         chroot('useradd', '--create-home', '--groups', 'wheel', '--shell', '/bin/bash', user)
+        for folder in ('downloads', 'media', 'documents'):
+            chroot('install', '-d', '-m', '0700', '-o', user, '-g', user, '/home/' + user + '/' + folder)
         chroot('chpasswd', secret=user + ':' + password + '\n')
         if supplied:
             private = TARGET / 'home' / user / '.local/state/frankenstein'
@@ -332,6 +334,8 @@ def provision_input(args, temporary):
             'recheck': lambda: provision.selected_entries(connection, [], expected=selected),
             'restore': lambda destination: provision.receive('adb', args.phone, state, destination, expected=selected),
             'device_state': [provision.kit.safe(state / name) for name in ('device.key', 'device.pem')] + [pin],
+            'github_credentials': lambda: provision.selected_entries(connection, ['credentials/github.json'],
+                expected=selected)[1]['credentials/github.json'],
         }
     else:
         bundle = provision.kit.outside_git(args.provisioning_bundle)
@@ -349,7 +353,8 @@ def provision_input(args, temporary):
             if provision.kit.sha(bundle) != args.sha256:
                 raise Error('selected provisioning bundle changed')
         supplied = {'recheck': recheck,
-                    'restore': lambda destination: provision.portable.restore(bundle, destination, args.sha256)}
+                    'restore': lambda destination: provision.portable.restore(bundle, destination, args.sha256),
+                    'github_credentials': lambda: provision.kit.safe(prepared / 'state/credentials/github.json').read_bytes()}
     return (*supplied_fields(entries, provision.kit.decode), supplied)
 
 
@@ -394,13 +399,14 @@ def main(argv=None):
 
 
 def execute(args, node, temporary):
-    # Resolve trust before asking for private state or disk approval. A failed
-    # stable selection never silently consumes development packages from the ISO.
-    manifest = select_engine(args.engine_release, args.experimental_engine, temporary)
+    # Paired account access must be available before stable release verification.
+    # Neither pairing nor release selection writes to the installation target.
     supplied = None
     if args.phone or args.provisioning_bundle:
         config, password, luks_secret, supplied = provision_input(args, temporary)
-    else:
+    manifest = select_engine(args.engine_release, args.experimental_engine, temporary,
+                             supplied.get('github_credentials') if supplied else None)
+    if not supplied:
         config = profile(json.loads(args.profile.read_text()) if args.profile else {
             'username': input('Username: '), 'hostname': input('Hostname: '),
             'timezone': input('Timezone [UTC]: ') or 'UTC'})

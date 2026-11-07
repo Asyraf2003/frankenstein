@@ -1,0 +1,7 @@
+[Unit]
+Description=Synchronize selected Frankenstein folders with Google Drive
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/frankenstein drive sync

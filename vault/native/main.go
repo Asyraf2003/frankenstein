@@ -348,7 +348,7 @@ func verify(source io.Reader, selected string) ([]byte, error) {
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "amend-github" {
+	if len(os.Args) == 2 && (os.Args[1] == "amend-github" || os.Args[1] == "amend-credential") {
 		result, err := amend(os.Stdin)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "VAULT_AMENDMENT_FAILED")

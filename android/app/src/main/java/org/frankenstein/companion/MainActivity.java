@@ -109,6 +109,10 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 8) {
+            if (result == RESULT_OK) startActivity(new Intent(this, GoogleDriveActivity.class));
+            return;
+        }
         if (request == 7) {
             if (result == RESULT_OK) {
                 approvedPeer = null;
@@ -243,6 +247,7 @@ public final class MainActivity extends Activity {
             } else {
                 status.setText("Your vault is ready\n\nWhat would you like to do?");
                 action("Encrypted backup", this::backupStep);
+                action("Google Drive sync", () -> authenticate("Connect Google Drive", "Confirm ownership before account access", 8));
                 action("Open my vault", () -> authenticate("Open Frankenstein vault", "Confirm ownership", 2));
             }
         } catch (Exception error) {

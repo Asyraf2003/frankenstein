@@ -14,6 +14,7 @@ class Error(Exception):
 
 
 HELP = """Usage: frankenstein COMMAND [ARGS]
+  drive prepare|setup|sync|on|off (uses authorization from the paired phone)
   packages status|update|install PACKAGE...|remove PACKAGE...
   power status|suspend|reboot|poweroff
   wifi [--interface DEVICE] status|on|off|list|saved|disconnect|connect SSID
@@ -214,6 +215,9 @@ def main(args):
     if args[0] == 'sync':
         import device_sync
         return device_sync.main(args[1:])
+    if args[0] == 'drive':
+        import drive_sync
+        return drive_sync.main(args[1:])
     handlers = {'packages': packages, 'power': power, 'wifi': wifi, 'bt': bluetooth, 'service': service}
     if args[0] not in handlers:
         raise Error('unknown command; use frankenstein --help')

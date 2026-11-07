@@ -287,6 +287,16 @@ def run(args):
         usb.pair(device, key, cert, args.state, args.serial)
         peer = Peer(provision.connection(args.adb, args.serial, args.state, args.openssl, args.app))
         result = reconcile(args.ecosystem, peer, decide=choose, preview=args.preview, expected_plan=args.accept_plan)
+        if (not args.preview and result['action'] in ('receive-pc', 'unchanged')
+                and args.ecosystem.absolute() == Path.home() / '.local/state/frankenstein/ecosystem'
+                and (args.ecosystem / 'state/credentials/google-drive.json').is_file()):
+            # Start the installed provider after an authenticated transfer. A
+            # service failure cannot undo the already committed vault exchange.
+            try:
+                subprocess.run(['systemctl', '--user', 'start', '--no-block', 'frankenstein-drive-setup.service'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                notify('Device state received. Drive setup will retry at the next login.')
         if args.watch:
             print('SYNC=' + result['action'], flush=True)
             if result['action'] == 'conflict':

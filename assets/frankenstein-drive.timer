@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep downloads, media and documents synchronized with Google Drive
+
+[Timer]
+OnStartupSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

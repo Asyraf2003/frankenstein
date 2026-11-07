@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare user folders and consume paired phone Drive authorization
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/frankenstein drive prepare
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=default.target
