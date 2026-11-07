@@ -63,6 +63,7 @@ public final class GitHubActivity extends Activity {
         button.setOnClickListener(v->action.run()); layout.addView(button); return button;
     }
     private EditText field(String hint,String text) {
+        TextView label = new TextView(this); label.setText(hint); layout.addView(label);
         EditText field=new EditText(this); field.setSingleLine(true); field.setHint(hint); field.setText(text);
         field.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         field.setSaveEnabled(false); layout.addView(field); return field;
@@ -77,11 +78,15 @@ public final class GitHubActivity extends Activity {
             run(client->{ expectedKit=new GitHubSession(this).currentKit(); return client.begin(); },value->{ device=value; deviceScreen(); poll(); });
         });
         button("Reload my private repositories",this::reload);
-        repo=field("Private repository name",repoName); branch=field("Existing branch (blank = default)",branchName);
+        repo=field("Private repository name",repoName); branch=field("Existing backup branch (required)",branchName);
         button("Inspect repository and branch",()->{
             if (busy) return;
             String name=repo.getText().toString().trim(), ref=branch.getText().toString().trim();
             selection=null;
+            if (ref.isEmpty()) {
+                branch.setError("Enter the branch you intend to use, for example main or a test branch");
+                branch.requestFocus(); status.setText("Choose an explicit backup branch before inspecting or uploading."); return;
+            }
             run(client->adapter(client).select(name,ref), selected->{
                 selection=selected; repoName=name; branchName=selected.branch; branch.setText(branchName);
                 status.setText("Selected "+selected.repository+" / "+selected.branch+"\nCommit "+selected.parent+"\n\nUpload uses this exact prior commit. Other repository files are preserved.");
