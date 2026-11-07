@@ -250,6 +250,41 @@ class USB:
         self.run('forward', '--remove', 'tcp:' + str(port))
 
 
+def pair(usb, key, cert, state, serial):
+    pin = state / ('phone-' + hashlib.sha256(serial.encode()).hexdigest() + '.der')
+    outside_git(pin)
+    usb.request(cert)
+    phone = usb.phone_certificate()
+    # Parse before creating the pin, and never overwrite an existing identity.
+    ssl.PEM_cert_to_DER_cert(ssl.DER_cert_to_PEM_cert(phone))
+    if pin.exists() and pin.read_bytes() != phone:
+        raise ValueError('phone identity changed; explicit device replacement required')
+    port = usb.forward()
+    try:
+        print('Waiting up to 5 minutes for owner approval on the phone.', flush=True)
+        deadline = time.monotonic() + 300
+        while True:
+            try:
+                with connect(port, key, cert, phone) as stream:
+                    # A zero-byte object is harmless and confirms the server has
+                    # completed client authentication and accepted app traffic.
+                    empty = hashlib.sha256(b'').digest()
+                    stream.sendall(b'FRK1\x01' + empty + struct.pack('>Q', 0))
+                    if read_exact(stream, 1) != b'\0':
+                        raise ValueError('pairing proof rejected')
+                break
+            except (OSError, EOFError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('owner approval not received')
+                time.sleep(2)
+        if not pin.exists():
+            with pin.open('xb') as out:
+                out.write(phone)
+        print('PAIRING=VERIFIED', flush=True)
+    finally:
+        usb.remove(port)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--adb', default='adb')
@@ -276,36 +311,7 @@ def main():
     pin = args.state / ('phone-' + hashlib.sha256(args.serial.encode()).hexdigest() + '.der')
     outside_git(pin)
     if args.action == 'pair':
-        usb.request(cert)
-        phone = usb.phone_certificate()
-        # Parse before creating the pin, and never overwrite an existing identity.
-        ssl.PEM_cert_to_DER_cert(ssl.DER_cert_to_PEM_cert(phone))
-        if pin.exists() and pin.read_bytes() != phone:
-            raise ValueError('phone identity changed; explicit device replacement required')
-        port = usb.forward()
-        try:
-            print('Waiting up to 5 minutes for owner approval on the phone.', flush=True)
-            deadline = time.monotonic() + 300
-            while True:
-                try:
-                    with connect(port, key, cert, phone) as stream:
-                        # A zero-byte object is harmless and confirms the server has
-                        # completed client authentication and accepted app traffic.
-                        empty = hashlib.sha256(b'').digest()
-                        stream.sendall(b'FRK1\x01' + empty + struct.pack('>Q', 0))
-                        if read_exact(stream, 1) != b'\0':
-                            raise ValueError('pairing proof rejected')
-                    break
-                except (OSError, EOFError):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError('owner approval not received')
-                    time.sleep(2)
-            if not pin.exists():
-                with pin.open('xb') as out:
-                    out.write(phone)
-            print('PAIRING=VERIFIED', flush=True)
-        finally:
-            usb.remove(port)
+        pair(usb, key, cert, args.state, args.serial)
         return
     if not pin.exists():
         raise ValueError('pair this phone before transferring state')

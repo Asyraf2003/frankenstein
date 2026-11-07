@@ -58,6 +58,17 @@ public final class StorageInstrumentation extends Instrumentation {
                     @Override public File getNoBackupFilesDir() { return scratch; }
                 };
                 BlobStore isolatedStore = LocalStorage.open(isolated);
+                TrustedPeers trusted = new TrustedPeers(isolated);
+                if (trusted.contains(Identity.certificate())) throw new AssertionError("Unknown peer trusted");
+                trusted.remember(Identity.certificate());
+                if (!new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Trust did not survive reopening");
+                trusted.forgetAll();
+                if (new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Revoked peer trusted");
+                Files.write(new File(scratch, "trusted-peers").toPath(), new byte[]{1, 2, 3});
+                boolean invalidTrust = false;
+                try { new TrustedPeers(isolated).contains(Identity.certificate()); }
+                catch (IOException expected) { invalidTrust = true; }
+                if (!invalidTrust) throw new AssertionError("Corrupt trust pointer accepted");
                 NativeVault isolatedVault = new NativeVault(isolated);
                 String selectedId = Identity.hex(MessageDigest.getInstance("SHA-256").digest(fixture));
                 isolatedStore.put(selectedId, fixture.length, new ByteArrayInputStream(fixture));
@@ -160,7 +171,8 @@ public final class StorageInstrumentation extends Instrumentation {
             try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
             catch (Exception expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Native age accepted altered fixture");
-            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub encrypted token rotation/journal recovery and replica refusal");
+            GuidedNavigationChecks.run(this);
+            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub token journals, trusted peer revocation and guided navigation");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());

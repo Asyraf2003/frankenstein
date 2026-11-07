@@ -23,6 +23,10 @@ public final class GitHubActivity extends Activity {
     private GitHubBackup.Selection selection, downloadSelection;
     private String downloadDigest;
     private Uri downloadTarget;
+    private enum Step { SIGN_IN, DESTINATION, EXISTING, CREATE, CONFIRM_CREATE, ACTION, UPLOAD, DOWNLOAD, RESULT, AFTER_UPLOAD }
+    private Step step = Step.SIGN_IN;
+    private String account = "", repositories = "", resultMessage = "";
+    private boolean uploaded;
     private boolean foreground,busy;
     private int epoch;
     private long approvedAt;
@@ -44,12 +48,14 @@ public final class GitHubActivity extends Activity {
         foreground=true;
         if (downloadTarget!=null) { home(); download(); }
         else if (device!=null) { deviceScreen(); poll(); }
-        else { home(); reload(); }
+        else { home(); if (step == Step.SIGN_IN) reload(); }
     }
     @Override protected void onStop() {
         foreground=false; epoch++; busy=false;
         if (active!=null) active.cancel();
-        if (repo!=null) { repoName=repo.getText().toString().trim(); branchName=branch.getText().toString().trim(); backupDigest=digest.getText().toString().trim(); }
+        if (repo!=null) repoName=repo.getText().toString().trim();
+        if (branch!=null) branchName=branch.getText().toString().trim();
+        if (digest!=null) backupDigest=digest.getText().toString().trim();
         if (layout!=null) layout.removeAllViews(); repo=null; branch=null; digest=null;
         super.onStop();
     }
@@ -68,78 +74,117 @@ public final class GitHubActivity extends Activity {
         field.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         field.setSaveEnabled(false); layout.addView(field); return field;
     }
-    private void home() {
-        screen("GitHub private backup");
-        TextView disclosure = new TextView(this);
-        disclosure.setText("Only encrypted vault data and public metadata are uploaded. Recovery passphrase is optional; without one, keep an existing device key or paired copy. Cloud limit: 8 MiB.\n\nGitHub's repo permission covers public and private repositories; Frankenstein writes only the private repository and branch you select.");
-        layout.addView(disclosure);
-        button("Sign in / authorize this device",()->{
-            if (busy) return;
-            run(client->{ expectedKit=new GitHubSession(this).currentKit(); return client.begin(); },value->{ device=value; deviceScreen(); poll(); });
-        });
-        button("Reload my private repositories",this::reload);
-        repo=field("Private repository name",repoName); branch=field("Existing backup branch (required)",branchName);
-        button("Inspect repository and branch",()->{
-            if (busy) return;
-            String name=repo.getText().toString().trim(), ref=branch.getText().toString().trim();
-            selection=null;
-            if (ref.isEmpty()) {
-                branch.setError("Enter the branch you intend to use, for example main or a test branch");
-                branch.requestFocus(); status.setText("Choose an explicit backup branch before inspecting or uploading."); return;
-            }
-            run(client->adapter(client).select(name,ref), selected->{
-                selection=selected; repoName=name; branchName=selected.branch; branch.setText(branchName);
-                status.setText("Selected "+selected.repository+" / "+selected.branch+"\nCommit "+selected.parent+"\n\nUpload uses this exact prior commit. Other repository files are preserved.");
-            });
-        });
-        button("Create my private repository",()->{
-            if (busy) return;
-            String name=repo.getText().toString().trim();
-            new AlertDialog.Builder(this).setTitle("Create private repository?")
-                .setMessage("Create "+name+" in your signed-in GitHub account. Existing repositories are never replaced.")
-                .setNegativeButton("Cancel",null).setPositiveButton("Create",(dialog,which)->run(client->{
-                    GitHubBackup backup=adapter(client); JSONObject created=backup.create(name);
-                    return backup.select(name,created.getString("default_branch"));
-                },selected->{selection=selected; repoName=name; branchName=selected.branch; branch.setText(branchName); status.setText("Private repository created and selected: "+selected.repository); })).show();
-        });
-        button("Upload encrypted backup",()->{
-            if (busy) return;
-            GitHubBackup.Selection selected=chosen(); if (selected==null) return;
-            new AlertDialog.Builder(this).setTitle("Upload encrypted backup?").setMessage(selected.repository+"\nBranch: "+selected.branch+"\nPrior commit: "+selected.parent)
-                .setNegativeButton("Cancel",null).setPositiveButton("Upload",(dialog,which)->run(client->{
-                    GitHubBackup backup=adapter(client); NativeVault vault=new NativeVault(this); String generation=vault.current();
-                    Map<String,byte[]> files=GitHubBackup.capture(LocalStorage.open(this),vault,generation);
-                    if (!vault.current().equals(generation)) throw new GitHubClient.Failure("Vault changed; select and upload again");
-                    return backup.publish(selected,files);
-                },value->{backupDigest=value; digest.setText(value); selection=null;
-                    status.setText("Encrypted backup uploaded and downloaded bytes verified.\nBackup digest:\n"+value+"\n\nKeep this digest externally. Inspect the branch again before another upload or download.");})).show();
-        });
-        digest=field("Backup SHA-256 for recovery download",backupDigest);
-        button("Download recovery ZIP from GitHub",()->{
-            if (busy) return;
-            GitHubBackup.Selection selected=chosen(); if (selected==null) return;
-            String value=digest.getText().toString().trim();
-            if (!value.matches("[0-9a-f]{64}")) {status.setText("Enter the backup's 64-character SHA-256 digest.");return;}
-            downloadSelection=selected; downloadDigest=value;
-            startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").addCategory(Intent.CATEGORY_OPENABLE)
-                .putExtra(Intent.EXTRA_TITLE,"frankenstein-github-backup.zip"),1);
-        });
-        button("Close GitHub setup",this::finish);
+    private void go(Step next) {
+        if (busy) return;
+        step=next; home();
     }
-    private GitHubBackup.Selection chosen() {
-        if (selection==null || !selection.repository.endsWith("/"+repo.getText().toString().trim()) || !selection.branch.equals(branch.getText().toString().trim())) {
-            status.setText("Inspect the repository and branch first."); return null;
+    private void back(Step previous) { button("Back",()->go(previous)); }
+    private String destination() { return account+" / "+repoName+"\nBranch: "+branchName; }
+    private void home() {
+        switch (step) {
+            case SIGN_IN:
+                screen("1. Connect GitHub\n\nAuthorize your account to store an encrypted private backup. GitHub's repo permission covers public and private repositories. Frankenstein uses only the private destination you choose.");
+                button("Next: sign in to GitHub",()-> {
+                    if (busy) return;
+                    run(client->{expectedKit=new GitHubSession(this).currentKit();return client.begin();},value->{device=value;deviceScreen();poll();});
+                });
+                button("Back",this::finish);
+                break;
+            case DESTINATION:
+                screen("2. Choose a destination\n\nSigned in as "+account+".\nUse a private repository you already own, or create one for your encrypted backups.");
+                button("Use an existing repository",()->go(Step.EXISTING));
+                button("Create a private repository",()->go(Step.CREATE));
+                back(Step.SIGN_IN);
+                break;
+            case EXISTING:
+                screen("2. Select your private backup destination\n\nYour repositories:\n"+repositories);
+                repo=field("Repository name",repoName);
+                branch=field("Existing branch name",branchName);
+                button("Next",()-> {
+                    if (busy) return;
+                    repoName=repo.getText().toString().trim(); branchName=branch.getText().toString().trim(); selection=null;
+                    if (branchName.isEmpty()) {branch.setError("Enter the branch you intend to use");branch.requestFocus();return;}
+                    run(client->adapter(client).select(repoName,branchName),value->{selection=value;step=Step.ACTION;home();});
+                });
+                back(Step.DESTINATION);
+                break;
+            case CREATE:
+                screen("2. Name your new private repository");
+                repo=field("New repository name",repoName);
+                button("Next",()-> {
+                    repoName=repo.getText().toString().trim();
+                    try {GitHubBackup.name(repoName);go(Step.CONFIRM_CREATE);}
+                    catch(Exception error) {repo.setError("Use letters, numbers, hyphens or underscores; no spaces");}
+                });
+                back(Step.DESTINATION);
+                break;
+            case CONFIRM_CREATE:
+                screen("Create this private repository?\n\n"+account+" / "+repoName+"\n\nIt will belong to your signed-in account. Existing repositories are preserved.");
+                button("Create repository",()->run(client->{
+                    GitHubBackup backup=adapter(client);JSONObject created=backup.create(repoName);
+                    return backup.select(repoName,created.getString("default_branch"));
+                },value->{selection=value;branchName=value.branch;step=Step.ACTION;home();}));
+                back(Step.CREATE);
+                break;
+            case ACTION:
+                screen("3. What would you like to do?\n\n"+destination());
+                button("Save an encrypted backup",()->go(Step.UPLOAD));
+                button("Download an existing backup",()->go(Step.DOWNLOAD));
+                back(Step.EXISTING);
+                break;
+            case UPLOAD:
+                screen("4. Confirm encrypted backup\n\n"+destination()+"\n\nOnly encrypted vault data and public metadata will be uploaded. Cloud limit: 8 MiB. Without a recovery passphrase, restoring requires an existing paired device key.");
+                button("Upload encrypted backup",()-> {
+                    if (selection==null) {step=Step.EXISTING;home();return;}
+                    GitHubBackup.Selection selected=selection;
+                    run(client->{
+                        GitHubBackup backup=adapter(client);NativeVault vault=new NativeVault(this);String generation=vault.current();
+                        Map<String,byte[]> files=GitHubBackup.capture(LocalStorage.open(this),vault,generation);
+                        if (!vault.current().equals(generation)) throw new GitHubClient.Failure("Vault changed; select and upload again");
+                        return backup.publish(selected,files);
+                    },value->{
+                        backupDigest=value;selection=null;uploaded=true;step=Step.RESULT;
+                        resultMessage="Encrypted backup uploaded and downloaded bytes verified.\n\n"+destination()+"\n\nBackup SHA-256:\n"+value;
+                        home();
+                    });
+                });
+                back(Step.ACTION);
+                break;
+            case DOWNLOAD:
+                screen("4. Download encrypted backup\n\n"+destination()+"\n\nEnter the digest of the backup you want. The next screen chooses where to save its ZIP.");
+                digest=field("Backup SHA-256",backupDigest);
+                button("Next: choose save location",()-> {
+                    if (busy) return;
+                    backupDigest=digest.getText().toString().trim();
+                    if (!backupDigest.matches("[0-9a-f]{64}")) {digest.setError("Enter the backup's 64-character SHA-256");return;}
+                    run(client->adapter(client).select(repoName,branchName),value->{
+                        downloadSelection=value;downloadDigest=backupDigest;
+                        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").addCategory(Intent.CATEGORY_OPENABLE)
+                            .putExtra(Intent.EXTRA_TITLE,"frankenstein-github-backup.zip"),1);
+                    });
+                });
+                back(Step.ACTION);
+                break;
+            case RESULT:
+                screen(resultMessage);
+                if (uploaded) button("Next",()->go(Step.AFTER_UPLOAD));
+                else button("Done",this::finish);
+                break;
+            case AFTER_UPLOAD:
+                screen("Backup saved. Would you like a downloaded copy too?");
+                button("Download this backup",()->go(Step.DOWNLOAD));
+                button("Done",this::finish);
+                break;
         }
-        return selection;
     }
     private GitHubBackup adapter(GitHubClient client) throws Exception { return new GitHubBackup(client,new GitHubSession(this).ready(client)); }
     private void reload() {
         if (busy) return;
         run(client->{
-            GitHubSession session=new GitHubSession(this); JSONObject credential=session.load();
-            if (credential==null) return "Sign in to GitHub to choose your private repository.";
-            return "Signed in as "+credential.getString("login")+"\nYour writable private repositories:\n"+String.join("\n",adapter(client).repositories());
-        },value->status.setText(value));
+            JSONObject credential=new GitHubSession(this).load();
+            if (credential==null) return null;
+            return new String[]{credential.getString("login"),String.join("\n",adapter(client).repositories())};
+        },value->{if(value!=null){account=value[0];repositories=value[1];step=Step.DESTINATION;home();}});
     }
     private void deviceScreen() {
         screen("Authorize Frankenstein on GitHub\n\nVisit https://github.com/login/device\nEnter code: "+device.userCode+
@@ -150,7 +195,7 @@ public final class GitHubActivity extends Activity {
     private void poll() {
         GitHubClient.Device requested=device; String identity=expectedKit;
         run(client->{JSONObject tokens=client.poll(requested); return new GitHubSession(this).signIn(client,tokens,identity);},value->{
-            device=null; expectedKit=null; home(); status.setText("Signed in as "+value.getString("login")+". Credentials saved inside your encrypted portable vault."); reload();
+            device=null; expectedKit=null; account=value.getString("login"); step=Step.DESTINATION; home(); reload();
         });
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
@@ -167,8 +212,12 @@ public final class GitHubActivity extends Activity {
                 if (output==null) throw new java.io.IOException(); GitHubBackup.recoveryZip(files,output);
             }
             return value;
-        },id->status.setText("GitHub recovery ZIP downloaded and hashes verified.\nDigest: "+id+
-            "\nUse recover-backup with your optional recovery passphrase or an existing device identity (--identity). This download does not replace the phone's vault."));
+        },id->{
+            uploaded=false;step=Step.RESULT;
+            resultMessage="Encrypted backup downloaded and hashes verified.\n\n"+destination()+"\n\nSHA-256:\n"+id+
+                "\n\nKeep this ZIP outside the phone. Restoring needs your recovery passphrase or a paired device key.";
+            home();
+        });
     }
     private <T> void run(Action<T> action,Done<T> done) {
         if (busy || !foreground) return;
@@ -185,9 +234,10 @@ public final class GitHubActivity extends Activity {
                 busy=false;
                 if (message!=null) {
                     if (device!=null) {device=null;expectedKit=null;home();}
+                    if (message.startsWith("GitHub conflict")) {selection=null;step=Step.EXISTING;home();}
                     status.setText(message);return;
                 }
-                try {done.done(result);} catch(Exception ignored) {status.setText("Result could not be displayed. Reload to check the saved state.");}
+                try {done.done(result);} catch(Exception ignored) {status.setText("Result could not be displayed. Go back and try again to check the saved state.");}
             });
         });
     }

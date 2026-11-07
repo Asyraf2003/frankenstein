@@ -23,7 +23,7 @@ MAX_HEADER = 65536
 MAX_ARCHIVE = 8 * 1024**3 - MAX_HEADER - 8
 
 
-def create(staging, identity, context, capsule, capsule_digest, destination):
+def create(staging, identity, context, capsule, capsule_digest, destination, *, kit_id=None):
     destination = kit.outside_git(destination)
     identity = kit.outside_git(identity)
     kit.require(identity.is_file() and identity.stat().st_mode & 0o077 == 0
@@ -38,7 +38,7 @@ def create(staging, identity, context, capsule, capsule_digest, destination):
         opening.private_write(copied_identity, identity.read_bytes())
         recipient = opening.native(['age-keygen', '-y', str(copied_identity)]).decode().strip()
         archive = work / 'vault.age'
-        kit.create(staging, context, [recipient] + ([recovery['recipient']] if recovery else []), archive)
+        kit.create(staging, context, [recipient] + ([recovery['recipient']] if recovery else []), archive, kit_id=kit_id)
         proof = kit.inspect(archive, copied_identity, context)
         kit.require(archive.stat().st_size <= MAX_ARCHIVE, 'PORTABLE_TOO_LARGE')
         header = {'schema': 1 if recovery else 2, 'identity': copied_identity.read_text(), 'context': kit.context(context),
