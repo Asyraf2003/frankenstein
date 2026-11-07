@@ -1,8 +1,9 @@
 #!/bin/sh
 # Adapted from the MIT-licensed shared desktop startup; no hardware policy.
-dbus-update-activation-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE
+dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_SESSION_TYPE
 xsetroot -solid '#20242b'
 dunst &
+systemctl --user start frankenstein-sync.service
 if [ -f /etc/frankenstein/install.json ]; then
     xterm -T 'Welcome to Frankenstein' -e frankenstein-welcome &
 fi

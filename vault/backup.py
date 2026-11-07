@@ -109,8 +109,8 @@ def _publish(repo, candidate, identity, context, capsule, capsule_digest, verify
         return proof['archive_sha256']
 
 
-def restore(repo, digest, destination, branch=None):
-    """All-device-loss path: GitHub access plus externally held recovery passphrase."""
+def restore(repo, digest, destination, branch=None, identity=None):
+    """Restore with optional independent recovery or an existing device identity."""
     url, branch = repository(repo, branch)
     kit.require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest), 'BACKUP_SELECTOR_INVALID')
     destination = kit.outside_git(destination)
@@ -131,8 +131,10 @@ def restore(repo, digest, destination, branch=None):
             kit.require(path.is_file() or path.is_dir(), 'BACKUP_FILE_TYPE_INVALID')
             if path.is_file():
                 actual.add(path.relative_to(source).as_posix())
-        kit.require(actual == expected_files, 'BACKUP_LAYOUT_INVALID')
-        for name in sorted(expected_files):
+        device_files = {'backup.json', 'vault.age'}
+        kit.require(actual in (expected_files, device_files), 'BACKUP_LAYOUT_INVALID')
+        has_recovery = actual == expected_files
+        for name in sorted(actual):
             target = copied / name
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(source / name, target)
@@ -140,11 +142,21 @@ def restore(repo, digest, destination, branch=None):
         manifest = kit.decode((copied / 'backup.json').read_bytes())
         kit.require(isinstance(manifest, dict) and set(manifest) ==
                     {'schema', 'ciphertext_sha256', 'context', 'recovery_manifest_sha256'} and
-                    type(manifest['schema']) is int and manifest['schema'] == 1 and
+                    type(manifest['schema']) is int and manifest['schema'] == (1 if has_recovery else 2) and
                     manifest['ciphertext_sha256'] == digest and kit.sha(copied / 'vault.age') == digest,
                     'BACKUP_INTEGRITY_MISMATCH')
-        opening.inspect(copied / 'recovery', manifest['recovery_manifest_sha256'])
-        return kit.materialize(copied / 'vault.age', copied / 'recovery/identity.age',
+        if has_recovery:
+            opening.inspect(copied / 'recovery', manifest['recovery_manifest_sha256'])
+        else:
+            kit.require(manifest['recovery_manifest_sha256'] is None, 'BACKUP_INTEGRITY_MISMATCH')
+        if identity is not None:
+            identity = kit.outside_git(identity)
+            kit.require(identity.is_file() and identity.stat().st_size <= 4096 and identity.stat().st_mode & 0o077 == 0,
+                        'BACKUP_DEVICE_IDENTITY_NOT_PRIVATE')
+        else:
+            kit.require(has_recovery, 'BACKUP_REQUIRES_EXISTING_DEVICE_IDENTITY')
+            identity = copied / 'recovery/identity.age'
+        return kit.materialize(copied / 'vault.age', identity,
                                manifest['context'], destination, digest)
 
 
@@ -164,6 +176,7 @@ def main():
     recover = sub.add_parser('restore')
     recover.add_argument('--sha256', required=True)
     recover.add_argument('--output', type=Path, required=True)
+    recover.add_argument('--identity', type=Path, help='existing private device key for backups without a recovery passphrase')
     args = parser.parse_args()
     try:
         if args.action == 'capture':
@@ -175,7 +188,7 @@ def main():
                              kit.decode(args.context.read_bytes()), args.capsule, args.capsule_sha256, args.branch)
             print('PRIVATE_BACKUP=' + digest)
         else:
-            restore(args.repository, args.sha256, args.output, args.branch)
+            restore(args.repository, args.sha256, args.output, args.branch, args.identity)
             print('PRIVATE_RESTORE=VERIFIED')
     except (OSError, ValueError, KeyError, TypeError) as error:
         print('PRIVATE_BACKUP=FAIL (' + (str(error) if isinstance(error, kit.KitError)

@@ -16,7 +16,10 @@ def main():
         raise RuntimeError('this boot has not passed base verification')
     print('Welcome to Frankenstein ' + receipt['engine'])
     print('Encrypted Arch base boot verified. Openbox desktop is running.')
-    print('USB pairing and vault provisioning: not configured.')
+    print('Private ecosystem restored from your selected device.' if receipt.get('portable_state_restored')
+          else 'Private ecosystem: not configured.')
+    if receipt.get('vaultwarden_prepared'):
+        print('Your existing Vaultwarden data is restored. Authorize this PC to bring the service online.')
     print('LTS recovery entry installed; recovery boot has not yet been verified.')
     print('Use frankenstein --help for native system controls.')
     if sys.stdin.isatty():

@@ -12,7 +12,11 @@ import java.security.KeyStore;
 import javax.crypto.KeyGenerator;
 
 final class LocalStorage {
-    static BlobStore open(Context context) throws Exception {
+    private static final java.util.Map<String, BlobStore> stores = new java.util.HashMap<>();
+    static synchronized BlobStore open(Context context) throws Exception {
+        String location = context.getNoBackupFilesDir().getCanonicalPath();
+        BlobStore existing = stores.get(location);
+        if (existing != null) return existing;
         StreamingAeadConfig.register();
         String alias = "frankenstein-storage-v1";
         File root = context.getNoBackupFilesDir();
@@ -40,6 +44,8 @@ final class LocalStorage {
                 Files.move(temporary.toPath(), keyset.toPath());
             } finally { Files.deleteIfExists(temporary.toPath()); }
         }
-        return new BlobStore(new File(root, "objects"), handle.getPrimitive(StreamingAead.class));
+        BlobStore store = new BlobStore(new File(root, "objects"), handle.getPrimitive(StreamingAead.class));
+        stores.put(location, store);
+        return store;
     }
 }

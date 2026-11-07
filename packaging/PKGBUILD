@@ -17,6 +17,8 @@ check() {
 package_frankenstein-core() {
     depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
     optdepends=('sudo: privileged package and radio actions'
+                'docker: enrolled Vaultwarden service'
+                'docker-compose: Vaultwarden service lifecycle'
                 'github-cli: verify and stage selected stable engine releases'
                 'age: native encrypted portable vault envelopes'
                 'android-tools: authenticated USB transport to the companion'
@@ -33,10 +35,16 @@ package_frankenstein-core() {
     install -Dm644 lib/control.py "$pkgdir/usr/lib/frankenstein/control.py"
     install -Dm644 lib/profiles.py "$pkgdir/usr/lib/frankenstein/profiles.py"
     install -Dm644 lib/releases.py "$pkgdir/usr/lib/frankenstein/releases.py"
+    install -Dm644 lib/engine_update.py "$pkgdir/usr/lib/frankenstein/engine_update.py"
     install -Dm644 lib/provision.py "$pkgdir/usr/lib/frankenstein/provision.py"
+    install -Dm644 lib/device_sync.py "$pkgdir/usr/lib/frankenstein/device_sync.py"
+    install -Dm644 lib/vault_provision.py "$pkgdir/usr/lib/frankenstein/vault_provision.py"
+    install -Dm644 assets/frankenstein-sync.service "$pkgdir/usr/lib/systemd/user/frankenstein-sync.service"
     install -Dm644 vault/recovery_kit.py "$pkgdir/usr/lib/frankenstein/vault/recovery_kit.py"
     install -Dm644 vault/recovery_opening.py "$pkgdir/usr/lib/frankenstein/vault/recovery_opening.py"
+    install -Dm644 vault/recovery_backup.py "$pkgdir/usr/lib/frankenstein/vault/recovery_backup.py"
     install -Dm644 vault/backup.py "$pkgdir/usr/lib/frankenstein/vault/backup.py"
+    install -Dm644 vault/vaultwarden.py "$pkgdir/usr/lib/frankenstein/vault/vaultwarden.py"
     install -Dm644 vault/portable.py "$pkgdir/usr/lib/frankenstein/vault/portable.py"
     install -Dm644 transport/usb.py "$pkgdir/usr/lib/frankenstein/transport/usb.py"
     install -Dm644 lib/first_boot.py "$pkgdir/usr/lib/frankenstein/first_boot.py"

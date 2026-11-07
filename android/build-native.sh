@@ -18,7 +18,7 @@ done
 go list -m -f '{{if .Dir}}{{.Path}} {{.Dir}}{{end}}' all | while read -r module directory; do
     [[ "$module" == github.com/Asyraf2003/frankenstein/vault/native ]] && continue
     if [[ -f "$directory/LICENSE" ]]; then
-        cp "$directory/LICENSE" "$output/assets/licenses/${module//\//_}.txt"
+        install -m644 "$directory/LICENSE" "$output/assets/licenses/${module//\//_}.txt"
     fi
 done
-cp "$(go env GOROOT)/LICENSE" "$output/assets/licenses/go-runtime.txt"
+install -m644 "$(go env GOROOT)/LICENSE" "$output/assets/licenses/go-runtime.txt"
