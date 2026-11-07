@@ -13,7 +13,7 @@ import time
 import uuid
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+sys.path.insert(0, os.environ.get('FRANKENSTEIN_TEST_RUNTIME', str(Path(__file__).resolve().parents[1] / 'lib')))
 import vault_provision as provisioning
 
 spec = importlib.util.spec_from_file_location('vaultwarden', Path(__file__).resolve().parents[1] / 'vault/vaultwarden.py')
