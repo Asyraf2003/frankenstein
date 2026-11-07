@@ -74,7 +74,7 @@ class VM:
                         break
 
     def keys(self, line):
-        assert re.fullmatch('[a-z ]+', line)
+        assert re.fullmatch('[a-z0-9 ]+', line)
         for char in line + '\n':
             key = {' ': 'spc', '\n': 'ret'}.get(char, char)
             self.qmp('human-monitor-command', {'command-line': 'sendkey ' + key})
