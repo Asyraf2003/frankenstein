@@ -28,6 +28,7 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   usb --serial DEVICE --state PRIVATE_DIRECTORY pair|push|pull|receive|current|activate [ARGS]
   portable create|restore [ARGS] (private provisioning bundle; never store in Git)
   provision --serial DEVICE --state PRIVATE_DIRECTORY --output NEW_PRIVATE_DIRECTORY
+  sync --serial DEVICE --state PRIVATE_DIRECTORY [--ecosystem PRIVATE_DIRECTORY] [--preview]
 
 Install/remove/update use pacman; installation performs a full system upgrade.
 Power actions use systemd/logind and its normal authorization and inhibitors.
@@ -197,6 +198,9 @@ def main(args):
     if args[0] == 'provision':
         import provision
         return provision.main(args[1:])
+    if args[0] == 'sync':
+        import device_sync
+        return device_sync.main(args[1:])
     handlers = {'packages': packages, 'power': power, 'wifi': wifi, 'bt': bluetooth, 'service': service}
     if args[0] not in handlers:
         raise Error('unknown command; use frankenstein --help')

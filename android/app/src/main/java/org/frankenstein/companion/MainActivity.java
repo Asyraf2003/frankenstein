@@ -44,6 +44,15 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); show(intent); }
     private void show(Intent intent) {
+        if (intent.getBooleanExtra("setup_if_empty", false)) {
+            approvedPeer = null;
+            show(new Intent());
+            try {
+                if (new NativeVault(this).current().equals(NativeVault.EMPTY))
+                    status.setText("Both devices are empty. Choose Set up this phone to create your vault, then sync again from the PC.");
+            } catch (Exception error) { status.setText("Protected storage is unavailable."); }
+            return;
+        }
         // Returning via the launcher resumes this explicitly approved in-memory
         // session. An untrusted pairing intent still goes through owner approval.
         if (intent.getStringExtra("peer_certificate") == null && approvedPeer != null) {
@@ -67,8 +76,15 @@ public final class MainActivity extends Activity {
             certificate.checkValidity();
             certificate.verify(certificate.getPublicKey());
             String fingerprint = Identity.fingerprint(certificate);
+            KeyguardManager lock = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+            if (!lock.isDeviceLocked() && new TrustedPeers(this).contains(certificate)) {
+                approvedPeer = certificate;
+                approvedAt = android.os.SystemClock.elapsedRealtime();
+                resumeApprovedPeer();
+                return;
+            }
             status.setText("Approve this PC?\n\nCompare this fingerprint with the PC before accepting:\n\n" + fingerprint +
-                "\n\nAn accepted device can send and retrieve your portable state while this screen is open.");
+                "\n\nAn accepted device can send and retrieve your portable state while this screen is open. This PC will be remembered for reconnection while your phone is unlocked. You can forget trusted PCs at any time.");
             Button accept = new Button(this);
             accept.setText("Accept device");
             accept.setFilterTouchesWhenObscured(true);
@@ -89,6 +105,15 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 7) {
+            if (result == RESULT_OK) {
+                approvedPeer = null;
+                if (server != null) { server.close(); server = null; }
+                try { new TrustedPeers(this).forgetAll(); show(new Intent()); status.setText("Trusted PCs forgotten. New access requires approval."); }
+                catch (Exception error) { status.setText("Trust reset failed. USB access is stopped."); }
+            }
+            return;
+        }
         if (request == 6) {
             if (result == RESULT_OK) startActivity(new Intent(this, GitHubActivity.class));
             return;
@@ -133,6 +158,8 @@ public final class MainActivity extends Activity {
         X509Certificate peer = pending;
         pending = null;
         if (request != 1 || result != RESULT_OK || peer == null) { show(new Intent()); return; }
+        try { new TrustedPeers(this).remember(peer); }
+        catch (Exception error) { status.setText("PC trust could not be saved. Access remains closed."); return; }
         approvedPeer = peer;
         approvedAt = android.os.SystemClock.elapsedRealtime();
         resumeApprovedPeer();
@@ -164,6 +191,7 @@ public final class MainActivity extends Activity {
                         stop.setText("Stop device access");
                         stop.setOnClickListener(view -> { approvedPeer = null; show(new Intent()); });
                         layout.addView(stop);
+                        addForgetButton();
                     } catch (Exception error) { status.setText("USB listener could not start. Access remains closed."); }
                 });
             } catch (Exception error) { runOnUiThread(() -> {
@@ -192,6 +220,7 @@ public final class MainActivity extends Activity {
         if (server != null) { server.close(); server = null; status.setText("USB access stopped while the app is closed."); }
     }
     private void addVaultButton() {
+        addForgetButton();
         Button github = new Button(this);
         github.setText("GitHub private backup");
         github.setFilterTouchesWhenObscured(true);
@@ -217,6 +246,13 @@ public final class MainActivity extends Activity {
             else status.setText("Set a device screen lock before opening the vault.");
         });
         layout.addView(open);
+    }
+    private void addForgetButton() {
+        Button forget = new Button(this);
+        forget.setText("Forget trusted PCs");
+        forget.setFilterTouchesWhenObscured(true);
+        forget.setOnClickListener(view -> authenticate("Forget trusted PCs", "Future connections will need approval again", 7));
+        layout.addView(forget);
     }
     private void authenticate(String title, String message, int request) {
         KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
@@ -287,7 +323,8 @@ public final class MainActivity extends Activity {
                             layout.addView(back);
                         } else {
                             org.json.JSONObject files = result.getJSONObject("manifest").getJSONObject("files");
-                            status.setText("Vault ready\n" + files.length() + " verified items. This phone can provide state to a new PC.");
+                            status.setText("Vault ready\n" + files.length() + " verified items.\nUpdated: " +
+                                result.getJSONObject("manifest").getString("created_at") + "\nThis phone can provide state to a new PC.");
                             java.util.Iterator<String> names = files.keys();
                             while (names.hasNext()) {
                                 String name = names.next();

@@ -58,6 +58,17 @@ public final class StorageInstrumentation extends Instrumentation {
                     @Override public File getNoBackupFilesDir() { return scratch; }
                 };
                 BlobStore isolatedStore = LocalStorage.open(isolated);
+                TrustedPeers trusted = new TrustedPeers(isolated);
+                if (trusted.contains(Identity.certificate())) throw new AssertionError("Unknown peer trusted");
+                trusted.remember(Identity.certificate());
+                if (!new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Trust did not survive reopening");
+                trusted.forgetAll();
+                if (new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Revoked peer trusted");
+                Files.write(new File(scratch, "trusted-peers").toPath(), new byte[]{1, 2, 3});
+                boolean invalidTrust = false;
+                try { new TrustedPeers(isolated).contains(Identity.certificate()); }
+                catch (IOException expected) { invalidTrust = true; }
+                if (!invalidTrust) throw new AssertionError("Corrupt trust pointer accepted");
                 NativeVault isolatedVault = new NativeVault(isolated);
                 String selectedId = Identity.hex(MessageDigest.getInstance("SHA-256").digest(fixture));
                 isolatedStore.put(selectedId, fixture.length, new ByteArrayInputStream(fixture));
