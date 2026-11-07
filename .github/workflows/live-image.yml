@@ -4,7 +4,9 @@ on:
     paths:
       - 'installer/**'
       - 'packaging/**'
-      - 'lib/first_boot.py'
+      - 'lib/**'
+      - 'vault/**'
+      - 'transport/**'
       - 'tests/test_installer.py'
       - 'tests/live-vm.py'
       - 'tests/provisioning-fixture.py'
