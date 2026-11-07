@@ -26,10 +26,12 @@ import backup
 SCRIPT = ROOT / 'vault/recovery_opening.py'
 
 
-def tty(args, answers, timeout=40):
+def tty(args, answers, timeout=40, native=False):
     """Feed dummy native /dev/tty prompts, never argv/env or printed transcripts."""
     pid, descriptor = pty.fork()
     if pid == 0:
+        if native:
+            os.execvp(str(args[0]), list(map(str, args)))
         os.execv(sys.executable, [sys.executable, '-B', *map(str, args)])
     output, supplied, scanned, pending = bytearray(), 0, 0, False
     deadline = time.monotonic() + timeout

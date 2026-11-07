@@ -1,0 +1,13 @@
+[Unit]
+Description=Frankenstein owner-approved USB state synchronization
+ConditionPathExists=/usr/bin/adb
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/frankenstein sync --watch
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=default.target
