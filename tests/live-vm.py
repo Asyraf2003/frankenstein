@@ -136,7 +136,7 @@ def main():
         for start in range(0, len(encoded), 1024):
             vm.command("printf '%s' '" + encoded[start:start + 1024] + "' >> /root/provision.b64")
         vm.command('base64 -d /root/provision.b64 > /root/provision.fpe && rm /root/provision.b64')
-        vm.child.sendline('frankenstein-install --disk /dev/vda --provisioning-bundle /root/provision.fpe --sha256 ' + selected + ' --execute')
+        vm.child.sendline('frankenstein-install --disk /dev/vda --experimental-engine --provisioning-bundle /root/provision.fpe --sha256 ' + selected + ' --execute')
         # Account/disk credentials come from the verified synthetic vault. Only
         # this disposable disk's explicit destructive approval is automated.
         vm.child.expect(r'ERASE /dev/vda [a-f0-9]{12}')
