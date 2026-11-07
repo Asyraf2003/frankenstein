@@ -25,6 +25,7 @@ class Restores(unittest.TestCase):
         self.source.mkdir()
         with sqlite3.connect(self.source / 'db.sqlite3') as db:
             db.executescript('CREATE TABLE users(id); INSERT INTO users VALUES (1); CREATE TABLE ciphers(id); INSERT INTO ciphers VALUES (7);')
+        db.close()
         (self.source / 'attachments').mkdir()
         (self.source / 'attachments/item').write_bytes(b'synthetic attachment')
         self.archive = self.root / 'archive.tar.gz'
@@ -128,6 +129,15 @@ class Restores(unittest.TestCase):
         self.assertEqual(len(previous), 1)
         self.assertEqual(json.loads(previous[0].read_text())['services']['vaultwarden']['environment']['DOMAIN'],
                          'https://original.tail-example.ts.net')
+
+    def test_existing_project_with_another_data_owner_is_not_started(self):
+        service = self.service()
+        service.data = self.source
+        with patch.object(service, 'inspect', side_effect=vault.Error('service data owner changed')), \
+                patch.object(service, 'compose') as native:
+            with self.assertRaisesRegex(vault.Error, 'owner changed'):
+                service.on()
+        native.assert_not_called()
 
 
 if __name__ == '__main__':

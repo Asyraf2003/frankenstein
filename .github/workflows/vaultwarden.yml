@@ -1,10 +1,10 @@
 name: Native Vaultwarden recovery
 on:
   pull_request:
-    paths: ['vault/vaultwarden.py', 'tests/*vaultwarden*', 'windows/install-vault-command.ps1', '.github/workflows/vaultwarden.yml']
+    paths: ['vault/vaultwarden.py', 'lib/vault_provision.py', 'tests/*vaultwarden*', 'windows/install-vault-command.ps1', '.github/workflows/vaultwarden.yml']
   push:
     branches: [main]
-    paths: ['vault/vaultwarden.py', 'tests/*vaultwarden*', '.github/workflows/vaultwarden.yml']
+    paths: ['vault/vaultwarden.py', 'lib/vault_provision.py', 'tests/*vaultwarden*', '.github/workflows/vaultwarden.yml']
 permissions:
   contents: read
 jobs:
@@ -14,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y age
+      - run: python3 tests/native-vaultwarden-provision.py
       - run: |
           sudo python3 tests/native-vaultwarden.py \
             --image vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055 \

@@ -188,7 +188,11 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
             supplied['restore'](restored)
         cpu = Path('/proc/cpuinfo').read_text()
         microcode = ['intel-ucode'] if 'GenuineIntel' in cpu else ['amd-ucode'] if 'AuthenticAMD' in cpu else []
-        run('pacstrap', '-K', TARGET, *BASE, *microcode, *config['packages'])
+        # Only an explicitly selected portable Vaultwarden owner requests its
+        # runtime. The service stays stopped until this device is authorized.
+        with_vault = bool(supplied and (restored / 'state/desired/vaultwarden.json').is_file())
+        vault_packages = ['docker', 'docker-compose'] if with_vault else []
+        run('pacstrap', '-K', TARGET, *BASE, *microcode, *config['packages'], *vault_packages)
         write('etc/fstab', run('genfstab', '-U', TARGET, capture=True) + '\n')
         write('etc/hostname', config['hostname'] + '\n')
         write('etc/locale.gen', 'en_US.UTF-8 UTF-8\n')
@@ -232,6 +236,10 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
             shutil.copyfile(PAYLOAD / 'packages' / name, staging / name)
             (staging / name).chmod(0o644)
         chroot('pacman', '-U', '--noconfirm', *['/var/cache/pacman/pkg/' + n for n in manifest['packages']])
+        if with_vault:
+            chroot('frankenstein', 'vault-provision', 'restore',
+                   '--ecosystem', '/home/' + user + '/.local/state/frankenstein/ecosystem',
+                   '--output', '/var/lib/frankenstein/vault')
         for selection in ('shell', 'openbox'):
             # Fresh useradd skeleton is deliberately superseded by the selected profile.
             chroot('runuser', '-u', user, '--', 'frankenstein', 'profile', 'apply', selection, '--replace')
@@ -240,7 +248,8 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
                'fstrim.timer', 'frankenstein-first-boot.service')
         write('etc/frankenstein/install.json', json.dumps({
             'version': manifest['version'], 'username': user, 'filesystem': 'ext4',
-            'encrypted': True, 'portable_state_restored': bool(supplied), 'boot_verified': False}) + '\n')
+            'encrypted': True, 'portable_state_restored': bool(supplied),
+            'vaultwarden_prepared': with_vault, 'boot_verified': False}) + '\n')
         for name in ('vmlinuz-linux', 'initramfs-linux.img', 'vmlinuz-linux-lts',
                      'initramfs-linux-lts.img', 'EFI/BOOT/BOOTX64.EFI'):
             if not (TARGET / 'boot' / name).is_file():

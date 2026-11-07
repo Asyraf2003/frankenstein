@@ -226,6 +226,7 @@ class Service:
             require(not (self.root / 'capture-pending.json').exists(), 'interrupted capture requires recovery')
             database(self.data)
             self.prepare()
+            self.inspect()  # Refuse a different existing data owner before any start.
             self.compose('up', '-d', '--no-recreate')
             self.healthy()
             return {'state': 'running', 'url': self.config.get('domain', 'http://localhost:' + str(self.config.get('port', 8222)))}

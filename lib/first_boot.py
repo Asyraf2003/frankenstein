@@ -23,8 +23,14 @@ def main():
     for name in ('vmlinuz-linux', 'initramfs-linux.img', 'vmlinuz-linux-lts', 'initramfs-linux-lts.img'):
         if not (Path('/boot') / name).is_file():
             raise RuntimeError('missing boot artifact: ' + name)
+    if install.get('vaultwarden_prepared'):
+        import vault_provision
+        vault_provision.vault.database(Path('/var/lib/frankenstein/vault/data'))
+        check('pacman', '-Qk', 'docker', 'docker-compose')
     result = {'engine': install['version'], 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-              'kernel': platform.release(), 'base_verified': True, 'recovery_boot_verified': False}
+              'kernel': platform.release(), 'base_verified': True, 'recovery_boot_verified': False,
+              'portable_state_restored': bool(install.get('portable_state_restored')),
+              'vaultwarden_prepared': bool(install.get('vaultwarden_prepared'))}
     directory = Path('/var/lib/frankenstein')
     directory.mkdir(mode=0o755, parents=True, exist_ok=True)
     temporary = directory / 'boot.json.tmp'
