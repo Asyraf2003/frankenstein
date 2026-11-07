@@ -199,7 +199,7 @@ def main(args):
     if args[0] == 'vault-backup':
         return call([sys.executable, '/usr/lib/frankenstein/vault/backup.py', *args[1:]]).returncode
     if args[0] == 'vaultwarden':
-        return call([sys.executable, '/usr/lib/frankenstein/vault/vaultwarden.py', *args[1:]]).returncode
+        return call([sys.executable, '/usr/lib/frankenstein/vault/vaultwarden.py', *args[1:]], privileged=True).returncode
     if args[0] == 'usb':
         return call([sys.executable, '/usr/lib/frankenstein/transport/usb.py', *args[1:]]).returncode
     if args[0] == 'portable':

@@ -17,6 +17,8 @@ check() {
 package_frankenstein-core() {
     depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
     optdepends=('sudo: privileged package and radio actions'
+                'docker: enrolled Vaultwarden service'
+                'docker-compose: Vaultwarden service lifecycle'
                 'github-cli: verify and stage selected stable engine releases'
                 'age: native encrypted portable vault envelopes'
                 'android-tools: authenticated USB transport to the companion'
