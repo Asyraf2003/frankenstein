@@ -4,6 +4,7 @@ import configparser
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,7 +37,7 @@ def write(path, value):
     path = kit.safe(path)
     temporary = path.with_name(path.name + '.tmp')
     kit.safe(temporary)
-    with temporary.open('w', opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+    with open(temporary, 'w', opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
         stream.write(value)
         stream.flush()
         os.fsync(stream.fileno())
@@ -196,16 +197,23 @@ def main(argv=None):
         with locked(args.state) as state:
             if args.action in ('prepare', 'setup'):
                 credential = phone_credentials(args.ecosystem)
+                credential_digest = hashlib.sha256(json.dumps(credential, sort_keys=True).encode()).hexdigest()
                 local = kit.outside_git(args.local)
                 kit.private_directories(local)
                 if (state / 'selection.json').exists():
                     selection = kit.decode((state / 'selection.json').read_bytes())
                     if selection['account'].casefold() != credential['account'].casefold() or selection['local'] != str(local):
                         raise Error('Existing Drive selection belongs to another account or home directory')
+                    # Preserve rclone's refreshed tokens on ordinary retries,
+                    # but accept a new authorization supplied by the phone.
+                    if selection.get('credential_sha256') != credential_digest:
+                        import_credentials(state, credential)
+                        selection['credential_sha256'] = credential_digest
+                        write(state / 'selection.json', json.dumps(selection))
                 else:
                     import_credentials(state, credential)
                     selection = {'schema': 1, 'account': credential['account'],
-                                 'folder_id': mypc(state), 'local': str(local)}
+                                 'folder_id': mypc(state), 'local': str(local), 'credential_sha256': credential_digest}
                     write(state / 'selection.json', json.dumps(selection))
                 sync(state, initialize=True)
             else:

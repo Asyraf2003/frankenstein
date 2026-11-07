@@ -57,6 +57,38 @@ class DriveSync(unittest.TestCase):
             self.assertEqual(native.call_count, 1)
             self.assertNotIn('--resync', native.call_args.args)
 
+    def test_reauthorization_updates_token_without_resetting_existing_sync(self):
+        credential = {'account': 'owner@example.com', 'client_id': 'fixture.apps.googleusercontent.com',
+                      'access_token': 'synthetic-access', 'refresh_token': 'synthetic-refresh'}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(drive.kit, 'outside_git', side_effect=lambda p: Path(p).absolute()), \
+             patch.object(drive, 'phone_credentials', return_value=credential), \
+             patch.object(drive, 'mypc') as folder, patch.object(drive, 'run') as native:
+            root = Path(tmp)
+            state, home = root / 'private', root / 'home'
+            state.mkdir(); home.mkdir()
+            selected = state / 'selection.json'
+            selected.write_text(json.dumps({'schema': 1, 'account': credential['account'], 'folder_id': 'existing', 'local': str(home)}))
+            for name in drive.FOLDERS:
+                (home / name).mkdir()
+                (state / (name + '.ready')).write_text('verified\n')
+            args = ['setup', '--state', str(state), '--local', str(home)]
+            self.assertEqual(drive.main(args), 0)
+            config = state / 'rclone.conf'
+            self.assertIn('synthetic-refresh', config.read_text())
+            config.write_text('provider-refreshed-session')
+            self.assertEqual(drive.main(args), 0)
+            self.assertEqual(config.read_text(), 'provider-refreshed-session')
+            credential['refresh_token'] = 'new-phone-authorization'
+            self.assertEqual(drive.main(args), 0)
+            self.assertIn('new-phone-authorization', config.read_text())
+            self.assertEqual(json.loads(selected.read_text())['folder_id'], 'existing')
+            folder.assert_not_called()
+            self.assertEqual(native.call_count, 9)
+            for call in native.call_args_list:
+                self.assertEqual(call.args[0], 'bisync')
+                self.assertNotIn('--resync', call.args)
+
 
 if __name__ == '__main__':
     unittest.main()
