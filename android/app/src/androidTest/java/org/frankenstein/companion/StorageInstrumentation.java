@@ -171,7 +171,8 @@ public final class StorageInstrumentation extends Instrumentation {
             try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
             catch (Exception expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Native age accepted altered fixture");
-            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub encrypted token rotation/journal recovery and replica refusal");
+            GuidedNavigationChecks.run(this);
+            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub token journals, trusted peer revocation and guided navigation");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());
