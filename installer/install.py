@@ -141,6 +141,17 @@ def verify_payload():
 
 
 def install(node, config, password, luks_secret, manifest, supplied=None):
+    # pacstrap preserves pre-existing directories. A caller's private umask must
+    # not turn /etc or /var into root-only directories during package bootstrap.
+    # Secret files/directories retain their explicit 0600/0700 provider modes.
+    previous_mask = os.umask(0o022)
+    try:
+        return install_target(node, config, password, luks_secret, manifest, supplied)
+    finally:
+        os.umask(previous_mask)
+
+
+def install_target(node, config, password, luks_secret, manifest, supplied=None):
     # Repeat preconditions immediately before the first destructive operation.
     if supplied:
         supplied['recheck']()
@@ -171,6 +182,8 @@ def install(node, config, password, luks_secret, manifest, supplied=None):
         run('mount', '--mkdir', '-o', 'fmask=0077,dmask=0077', esp, TARGET / 'boot')
         restored = TARGET / 'var/lib/frankenstein/provisioned'
         if supplied:
+            for relative in ('var', 'var/lib', 'var/lib/frankenstein'):
+                (TARGET / relative).mkdir(mode=0o755, exist_ok=True)
             # The full portable payload lands on encrypted disk, never live RAM.
             supplied['restore'](restored)
         cpu = Path('/proc/cpuinfo').read_text()

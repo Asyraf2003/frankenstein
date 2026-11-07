@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +14,29 @@ spec.loader.exec_module(installer)
 
 
 class Installer(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX umask is exercised on Linux')
+    def test_private_caller_umask_does_not_break_system_directory_access(self):
+        original = os.umask(0o077)
+        try:
+            def bootstrap(*args):
+                with tempfile.TemporaryDirectory() as temp:
+                    system = Path(temp) / 'etc'
+                    system.mkdir()
+                    if os.name != 'nt':
+                        self.assertEqual(system.stat().st_mode & 0o777, 0o755)
+                    secret = Path(temp) / 'private'
+                    secret.mkdir(mode=0o700)
+                    if os.name != 'nt':
+                        self.assertEqual(secret.stat().st_mode & 0o777, 0o700)
+                raise installer.Error('synthetic interrupted bootstrap')
+            with patch.object(installer, 'install_target', side_effect=bootstrap):
+                with self.assertRaises(installer.Error):
+                    installer.install({}, {}, '', '', {})
+            retained = os.umask(0o077)
+            self.assertEqual(retained, 0o077)
+        finally:
+            os.umask(original)
+
     def setUp(self):
         self.disk = {'name': '/dev/vda', 'type': 'disk', 'size': 32 * 1024**3,
                      'ro': False, 'serial': 'DISPOSABLE', 'maj:min': '254:0',
