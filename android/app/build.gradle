@@ -1,4 +1,17 @@
 plugins { id 'com.android.application' }
+
+def engineVersion = rootProject.file('../VERSION').text.trim()
+if (!(engineVersion ==~ /(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/)) throw new GradleException('Invalid engine VERSION')
+def versionParts = engineVersion.split('\\.').collect { it.toLong() }
+def engineVersionCode = versionParts[0] * 1000000L + versionParts[1] * 1000L + versionParts[2]
+if (versionParts[1] > 999 || versionParts[2] > 999 || engineVersionCode < 1 || engineVersionCode > 2100000000L) {
+    throw new GradleException('VERSION cannot be represented as an Android versionCode')
+}
+def signingProof = providers.gradleProperty('signingProof').isPresent()
+def signingInputs = ['KEYSTORE', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD'].collectEntries {
+    [(it): providers.environmentVariable('ANDROID_RELEASE_' + it).orNull]
+}
+def signingReady = signingInputs.values().every { it != null && !it.isEmpty() }
 def sourceRevision = providers.gradleProperty('engineRevision').orElse(providers.exec {
     commandLine 'git', '-C', rootProject.projectDir.parentFile.absolutePath, 'rev-parse', 'HEAD'
 }.standardOutput.asText.map { it.trim() }).get()
@@ -11,8 +24,8 @@ android {
         applicationId 'org.frankenstein.companion'
         minSdk 29
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0-dev'
+        versionCode engineVersionCode.toInteger()
+        versionName engineVersion
         buildConfigField 'String', 'ENGINE_REVISION', '"' + sourceRevision + '"'
         testInstrumentationRunner 'org.frankenstein.companion.StorageInstrumentation'
         manifestPlaceholders = [appLabel: 'Frankenstein (development)']
@@ -22,13 +35,51 @@ android {
         main.jniLibs.srcDir layout.buildDirectory.dir('generated/native/jniLibs')
         main.assets.srcDir layout.buildDirectory.dir('generated/native/assets')
         androidTest.assets.srcDir layout.buildDirectory.dir('generated/test-fixtures')
+        release.assets.srcDir layout.buildDirectory.dir('generated/release/assets')
     }
     packaging { jniLibs { useLegacyPackaging = true } }
-    buildTypes { debug {
-        applicationIdSuffix providers.gradleProperty('isolatedProof').isPresent() ? '.dev.proof' : '.dev'
-        if (providers.gradleProperty('isolatedProof').isPresent()) manifestPlaceholders = [appLabel: 'Frankenstein (isolated test)']
+    signingConfigs { maintainer {
+        if (signingReady) {
+            storeFile file(signingInputs.KEYSTORE)
+            storePassword signingInputs.STORE_PASSWORD
+            keyAlias signingInputs.KEY_ALIAS
+            keyPassword signingInputs.KEY_PASSWORD
+        }
     } }
+    buildTypes {
+        debug {
+            applicationIdSuffix providers.gradleProperty('isolatedProof').isPresent() ? '.dev.proof' : '.dev'
+            versionNameSuffix '-dev'
+            if (providers.gradleProperty('isolatedProof').isPresent()) manifestPlaceholders = [appLabel: 'Frankenstein (isolated test)']
+        }
+        release {
+            debuggable false
+            signingConfig signingConfigs.maintainer
+            manifestPlaceholders = [appLabel: signingProof ? 'Frankenstein (signing test)' : 'Frankenstein']
+            if (signingProof) {
+                applicationIdSuffix '.dev.releaseproof'
+                versionNameSuffix '-signing-test'
+            }
+        }
+    }
 }
+tasks.register('prepareReleaseIdentity') {
+    doLast {
+        if (!signingReady) throw new GradleException('Explicit Android release signing inputs are required')
+        if (!signingProof && providers.environmentVariable('FRANKENSTEIN_RELEASE_AUTHORIZED').orNull != engineVersion) {
+            throw new GradleException('Production signing requires explicit authorization for VERSION')
+        }
+        def signer = providers.environmentVariable('ANDROID_RELEASE_SIGNER_SHA256').orNull
+        if (signer == null || !(signer ==~ /[0-9a-fA-F]{64}/)) throw new GradleException('A pinned release signer SHA256 is required')
+        def metadata = [schema: 1, version: engineVersion, version_code: engineVersionCode,
+                        commit: sourceRevision, channel: signingProof ? 'signing-test' : 'stable',
+                        application_id: 'org.frankenstein.companion' + (signingProof ? '.dev.releaseproof' : '')]
+        def output = layout.buildDirectory.file('generated/release/assets/engine.json').get().asFile
+        output.parentFile.mkdirs()
+        output.text = groovy.json.JsonOutput.toJson(metadata) + '\n'
+    }
+}
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'prepareReleaseIdentity' }
 tasks.register('requireNativeVault') {
     doLast {
         if (!layout.buildDirectory.file('generated/native/jniLibs/arm64-v8a/libfrankenstein_vault.so').get().asFile.exists()) {

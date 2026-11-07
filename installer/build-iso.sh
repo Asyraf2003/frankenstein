@@ -13,6 +13,7 @@ umask 022
 mkdir "$build/source" "$build/out"
 cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" \
     "$root/packaging" "$root/licenses" "$root/installer" "$root/vault" "$root/transport" "$root/LICENSE" "$root/VERSION" "$build/source/"
+install -Dm644 "$root/android/verify-release.py" "$build/source/android/verify-release.py"
 # Package only scripts and configuration. No large compilation or target-side build.
 chmod 755 "$build" "$build/source"
 chown -R nobody:nobody "$build/source"
@@ -65,7 +66,7 @@ Inspect: frankenstein-install --disk /dev/SELECTED_DISK
 Install a stable engine: frankenstein-install --disk /dev/SELECTED_DISK --engine-release vMAJOR.MINOR.PATCH --execute
 Development test only: frankenstein-install --disk /dev/SELECTED_DISK --experimental-engine --execute
 Installation always requires explicit disk approval. No disk is selected automatically.
-Install from an enrolled development companion:
+Install from an enrolled stable companion:
 frankenstein-install --disk /dev/SELECTED_DISK --phone USB_SERIAL --engine-release vMAJOR.MINOR.PATCH --execute
 Approve the PC fingerprint on your phone. Disk erasure still requires local approval.
 MOTD

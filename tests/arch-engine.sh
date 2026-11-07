@@ -8,6 +8,7 @@ for input in bootstrap bin lib profiles assets tests packaging licenses installe
     cp -R "/source/$input" "/engine-fixture/"
 done
 cp /source/vault/*.py /engine-fixture/vault/
+install -Dm644 /source/android/verify-release.py /engine-fixture/android/verify-release.py
 python - <<'PY'
 from pathlib import Path
 root = Path('/engine-fixture')
