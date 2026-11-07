@@ -4,12 +4,17 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 from unittest.mock import patch
+
+sys.path.insert(0, os.environ.get('FRANKENSTEIN_TEST_RUNTIME', str(Path(__file__).resolve().parents[1] / 'lib')))
+import vault_provision as provisioning
 
 spec = importlib.util.spec_from_file_location('vaultwarden', Path(__file__).resolve().parents[1] / 'vault/vaultwarden.py')
 vault = importlib.util.module_from_spec(spec)
@@ -24,6 +29,7 @@ with tempfile.TemporaryDirectory(prefix='vaultwarden-native-') as temporary:
     data = vault.private(root / 'data')
     seed = project + '-seed'
     service = None
+    restored_service = None
     try:
         vault.run(['docker', 'run', '-d', '--name', seed, '--mount', 'type=bind,src=' + str(data) + ',dst=/data', args.image])
         for _ in range(60):
@@ -89,8 +95,43 @@ with tempfile.TemporaryDirectory(prefix='vaultwarden-native-') as temporary:
         service.off()
         stopped = service.backup()
         assert not stopped['service_resumed'] and service.status()['state'] == 'stopped'
+        # Use the actual completed native capture through the portable owner
+        # pipeline, then start the restored database in another isolated service.
+        staged = root / 'owners'
+        (staged / 'desired').mkdir(parents=True)
+        (staged / 'desired/profile.json').write_bytes(b'{"fixture":true}')
+        context = {'revisions': {'engine': '1' * 40, 'state': '2' * 40},
+                   'features': ['fixture'], 'required_owners': ['desired']}
+        bundle = root / 'initial.fpe'
+        provisioning.portable.create(staged, key, context, None, None, bundle)
+        ecosystem = root / 'ecosystem'
+        provisioning.portable.restore(bundle, ecosystem, provisioning.kit.sha(bundle))
+        provisioning.attach(ecosystem, root / 'backups' / stopped['archive'], key, stopped, service.config)
+        destination = root / 'provisioned'
+        provisioning.restore(ecosystem, destination, project=project + '-new', port=18230)
+        restored_service = vault.Service(destination / 'service.json')
+        assert restored_service.on()['state'] == 'running'
+        assert (destination / 'data/attachments/fixture').read_bytes() == b'synthetic attachment preserved'
+        assert service.status()['state'] == 'stopped'
+        if os.geteuid() == 0:
+            # Real root-owned Docker capture attached by the unprivileged owner;
+            # later user sync must retain access to its lock, history and files.
+            account = pwd.getpwnam('nobody')
+            with tempfile.TemporaryDirectory(prefix='vault-owner-proof-') as owner_temp:
+                owner_root = Path(owner_temp)
+                owner_ecosystem = owner_root / 'ecosystem'
+                provisioning.portable.restore(bundle, owner_ecosystem, provisioning.kit.sha(bundle))
+                for path in [owner_root, *owner_root.rglob('*')]:
+                    os.chown(path, account.pw_uid, account.pw_gid)
+                provisioning.capture(owner_ecosystem, config, key)
+                for path in [owner_ecosystem, *owner_ecosystem.rglob('*'), * (owner_root / '.ecosystem-sync').rglob('*')]:
+                    assert path.stat().st_uid == account.pw_uid
+                assert (owner_ecosystem / 'state' / provisioning.DESIRED).is_file()
         print('NATIVE_VAULTWARDEN=PASS running-capture-resume,stopped-capture,age-restore,sqlite,attachment,encryption-failure,lost-start-reply')
+        print('NATIVE_VAULTWARDEN_PROVISION=PASS native-capture,portable-state,fresh-service-health,original-service-preserved')
     finally:
         subprocess.run(['docker', 'rm', '-f', seed], capture_output=True)
         if service:
             service.compose('down')
+        if restored_service:
+            restored_service.compose('down')

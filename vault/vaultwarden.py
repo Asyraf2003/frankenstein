@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -226,6 +227,7 @@ class Service:
             require(not (self.root / 'capture-pending.json').exists(), 'interrupted capture requires recovery')
             database(self.data)
             self.prepare()
+            self.inspect()  # Refuse a different existing data owner before any start.
             self.compose('up', '-d', '--no-recreate')
             self.healthy()
             return {'state': 'running', 'url': self.config.get('domain', 'http://localhost:' + str(self.config.get('port', 8222)))}
@@ -381,7 +383,28 @@ class Service:
                     sync(self.root)
                 raise
 
+    @contextmanager
+    def github_session(self):
+        # The installed engine shares the invoking owner's portable session.
+        # Standalone Windows deployment can keep its existing gh adapter.
+        parent = Path(__file__).resolve().parent.parent
+        library = parent if (parent / 'releases.py').is_file() else parent / 'lib'
+        if self.config.get('github_cli', 'gh') != 'gh' or not (library / 'releases.py').is_file():
+            yield
+            return
+        sys.path.insert(0, str(library))
+        import releases
+        try:
+            with releases.owner_credentials():
+                yield
+        except releases.Error as error:
+            raise Error(str(error)) from None
+
     def publish(self, receipt):
+        with self.github_session():
+            return self._publish(receipt)
+
+    def _publish(self, receipt):
         """Append ciphertext only, with a non-forced parent-bound Git ref update."""
         repository = self.config['backup_repository']
         branch = self.config['backup_branch']
@@ -432,7 +455,9 @@ class Service:
         return result
 
     def cloud_backup(self):
-        return self.publish(self.backup())
+        # Validate the session before pausing an active service for its capture.
+        with self.github_session():
+            return self._publish(self.backup())
 
     def connect(self, replace_address=False):
         with self.locked():

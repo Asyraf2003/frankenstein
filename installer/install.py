@@ -115,8 +115,9 @@ def chroot(*args, **kwargs):
     return run('arch-chroot', TARGET, *args, **kwargs)
 
 
-def verify_payload():
-    manifest = json.loads((PAYLOAD / 'packages.json').read_text())
+def verify_payload(manifest=None, directory=None):
+    manifest = json.loads((PAYLOAD / 'packages.json').read_text()) if manifest is None else manifest
+    directory = PAYLOAD / 'packages' if directory is None else Path(directory)
     if not isinstance(manifest, dict) or set(manifest) != {'version', 'packages'} or not isinstance(manifest['version'], str) or not re.fullmatch(r'\d+\.\d+\.\d+', manifest['version']):
         raise Error('invalid engine manifest')
     packages = manifest['packages']
@@ -131,13 +132,38 @@ def verify_payload():
     if roles != {'core', 'openbox'}:
         raise Error('expected distinct core and Openbox packages')
     for name, digest in packages.items():
-        artifact = PAYLOAD / 'packages' / name
+        artifact = directory / name
         if artifact.is_symlink() or not artifact.is_file():
             raise Error('package artifact must be a regular file')
         with artifact.open('rb') as stream:
             if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
                 raise Error('engine package integrity check failed')
     return manifest
+
+
+def select_engine(tag, experimental, temporary):
+    if bool(tag) == bool(experimental):
+        raise Error('select --engine-release vMAJOR.MINOR.PATCH, or explicitly --experimental-engine for testing')
+    if experimental:
+        manifest = verify_payload()
+        return {**manifest, '_directory': PAYLOAD / 'packages', 'source': {'channel': 'experimental'}}
+    library = PAYLOAD / 'lib' if (PAYLOAD / 'lib').is_dir() else Path(__file__).resolve().parents[1] / 'lib'
+    sys.path.insert(0, str(library))
+    import releases
+    try:
+        with releases.owner_credentials():
+            directory = releases.stage(tag, Path(temporary) / 'selected-engine')
+        attested = releases.validate_manifest(json.loads((directory / 'engine.json').read_text()), tag)
+    except releases.Error as error:
+        raise Error(str(error) + '; authenticate gh on the live system if required; no experimental fallback') from None
+    manifest = verify_payload({k: attested[k] for k in ('version', 'packages')}, directory)
+    # Check actual native metadata, not just names on release assets.
+    for name in manifest['packages']:
+        expected = name.removesuffix('-any.pkg.tar.zst').rsplit('-', 2)
+        if run('pacman', '-Qp', directory / name, capture=True) != expected[0] + ' ' + expected[1] + '-' + expected[2]:
+            raise Error('stable package metadata differs from its attested selection')
+    return {**manifest, '_directory': directory,
+            'source': {'channel': 'stable', 'tag': tag, 'commit': attested['commit'], 'repository': releases.REPOSITORY}}
 
 
 def install(node, config, password, luks_secret, manifest, supplied=None):
@@ -153,6 +179,8 @@ def install(node, config, password, luks_secret, manifest, supplied=None):
 
 def install_target(node, config, password, luks_secret, manifest, supplied=None):
     # Repeat preconditions immediately before the first destructive operation.
+    if '_directory' in manifest:
+        verify_payload({k: manifest[k] for k in ('version', 'packages')}, manifest['_directory'])
     if supplied:
         supplied['recheck']()
     fresh = selected_disk(node['name'])
@@ -188,7 +216,11 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
             supplied['restore'](restored)
         cpu = Path('/proc/cpuinfo').read_text()
         microcode = ['intel-ucode'] if 'GenuineIntel' in cpu else ['amd-ucode'] if 'AuthenticAMD' in cpu else []
-        run('pacstrap', '-K', TARGET, *BASE, *microcode, *config['packages'])
+        # Only an explicitly selected portable Vaultwarden owner requests its
+        # runtime. The service stays stopped until this device is authorized.
+        with_vault = bool(supplied and (restored / 'state/desired/vaultwarden.json').is_file())
+        vault_packages = ['docker', 'docker-compose'] if with_vault else []
+        run('pacstrap', '-K', TARGET, *BASE, *microcode, *config['packages'], *vault_packages)
         write('etc/fstab', run('genfstab', '-U', TARGET, capture=True) + '\n')
         write('etc/hostname', config['hostname'] + '\n')
         write('etc/locale.gen', 'en_US.UTF-8 UTF-8\n')
@@ -229,9 +261,14 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
         staging = TARGET / 'var/cache/pacman/pkg'
         staging.mkdir(mode=0o755, parents=True, exist_ok=True)
         for name in manifest['packages']:
-            shutil.copyfile(PAYLOAD / 'packages' / name, staging / name)
+            shutil.copyfile(Path(manifest.get('_directory', PAYLOAD / 'packages')) / name, staging / name)
             (staging / name).chmod(0o644)
+        verify_payload({k: manifest[k] for k in ('version', 'packages')}, staging)
         chroot('pacman', '-U', '--noconfirm', *['/var/cache/pacman/pkg/' + n for n in manifest['packages']])
+        if with_vault:
+            chroot('frankenstein', 'vault-provision', 'restore',
+                   '--ecosystem', '/home/' + user + '/.local/state/frankenstein/ecosystem',
+                   '--output', '/var/lib/frankenstein/vault')
         for selection in ('shell', 'openbox'):
             # Fresh useradd skeleton is deliberately superseded by the selected profile.
             chroot('runuser', '-u', user, '--', 'frankenstein', 'profile', 'apply', selection, '--replace')
@@ -240,7 +277,9 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
                'fstrim.timer', 'frankenstein-first-boot.service')
         write('etc/frankenstein/install.json', json.dumps({
             'version': manifest['version'], 'username': user, 'filesystem': 'ext4',
-            'encrypted': True, 'portable_state_restored': bool(supplied), 'boot_verified': False}) + '\n')
+            'engine_source': manifest.get('source', {'channel': 'experimental'}),
+            'encrypted': True, 'portable_state_restored': bool(supplied),
+            'vaultwarden_prepared': with_vault, 'boot_verified': False}) + '\n')
         for name in ('vmlinuz-linux', 'initramfs-linux.img', 'vmlinuz-linux-lts',
                      'initramfs-linux-lts.img', 'EFI/BOOT/BOOTX64.EFI'):
             if not (TARGET / 'boot' / name).is_file():
@@ -324,6 +363,9 @@ def main(argv=None):
     parser.add_argument('--sha256', help='selected offline provisioning bundle digest')
     parser.add_argument('--device-state', type=Path, default=Path('/root/.local/state/frankenstein/usb'))
     parser.add_argument('--execute', action='store_true', help='request installation; still requires typed approval')
+    engine = parser.add_mutually_exclusive_group()
+    engine.add_argument('--engine-release', help='exact stable vMAJOR.MINOR.PATCH release to verify and install')
+    engine.add_argument('--experimental-engine', action='store_true', help='explicitly install the embedded development packages for testing')
     args = parser.parse_args(argv)
     if args.profile and (args.phone or args.provisioning_bundle):
         parser.error('--profile cannot override provisioned identity')
@@ -337,6 +379,8 @@ def main(argv=None):
     if not args.execute:
         print('PLAN ONLY: GPT, 2 GiB ESP, LUKS2/ext4 root, Arch + Openbox, Linux + LTS.')
         return 0
+    if not args.engine_release and not args.experimental_engine:
+        parser.error('installation requires --engine-release vMAJOR.MINOR.PATCH or explicit --experimental-engine')
     if not sys.stdin.isatty() or os.geteuid() != 0 or not Path('/sys/firmware/efi').is_dir():
         raise Error('execution requires root, a local interactive terminal and UEFI boot')
     if not Path('/etc/arch-release').exists() or not Path('/run/archiso').exists():
@@ -350,6 +394,9 @@ def main(argv=None):
 
 
 def execute(args, node, temporary):
+    # Resolve trust before asking for private state or disk approval. A failed
+    # stable selection never silently consumes development packages from the ISO.
+    manifest = select_engine(args.engine_release, args.experimental_engine, temporary)
     supplied = None
     if args.phone or args.provisioning_bundle:
         config, password, luks_secret, supplied = provision_input(args, temporary)
@@ -359,7 +406,6 @@ def execute(args, node, temporary):
             'timezone': input('Timezone [UTC]: ') or 'UTC'})
     if not (Path('/usr/share/zoneinfo') / config['timezone']).is_file():
         raise Error('timezone is not installed')
-    manifest = verify_payload()
     # Refresh only live-media package metadata; the installed target uses pacstrap's database.
     run('pacman', '-Sy', '--noconfirm')
     run('pacman', '-Si', *BASE, *config['packages'], capture=True)
