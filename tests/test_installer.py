@@ -166,6 +166,26 @@ class Installer(unittest.TestCase):
                 installer.install(self.disk, {}, '', '', {}, {'recheck': changed})
             run.assert_not_called()
 
+    def test_paired_github_is_available_before_release_selection_or_disk_writes(self):
+        events = []
+        credential = lambda: b'{"tokens":{"access_token":"gho_synthetic_only"}}'
+        def provisioned(*args):
+            events.append('pair')
+            return {'username': 'fixture'}, '1234', 'fixture-disk-secret', {'github_credentials': credential}
+        def selection(tag, experimental, temporary, paired):
+            events.append('release')
+            self.assertIs(paired, credential)
+            raise installer.Error('synthetic provenance failure')
+        args = SimpleNamespace(phone='fixture', provisioning_bundle=None, engine_release='v0.2.0', experimental_engine=False)
+        with patch.object(installer, 'provision_input', side_effect=provisioned), \
+             patch.object(installer, 'select_engine', side_effect=selection), \
+             patch.object(installer, 'install') as disk, patch.object(installer, 'run') as native:
+            with self.assertRaisesRegex(installer.Error, 'provenance failure'):
+                installer.execute(args, self.disk, '/synthetic')
+            self.assertEqual(events, ['pair', 'release'])
+            disk.assert_not_called()
+            native.assert_not_called()
+
     def test_provisioned_fields_are_validated_without_printing_credentials(self):
         entries = {'desired/arch.json': json.dumps({'username': 'alice', 'hostname': 'workstation'}),
                    'credentials/arch-install.json': json.dumps({'password': 'synthetic-account-only',

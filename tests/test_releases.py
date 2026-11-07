@@ -128,6 +128,21 @@ class Releases(unittest.TestCase):
             self.assertEqual(os.environ['GH_HOST'], 'different.example')
             native.assert_not_called()
 
+    def test_fresh_pc_uses_paired_token_without_login_or_refresh_and_cleans_environment(self):
+        record = json.dumps({'tokens': {'access_token': 'gho_paired_synthetic_only'}}).encode()
+        with patch.dict(os.environ, {}, clear=True), patch.object(release, 'user_token') as installed, \
+             patch.object(release.subprocess, 'run') as native:
+            with release.owner_credentials(lambda: record):
+                self.assertEqual(os.environ['GH_TOKEN'], 'gho_paired_synthetic_only')
+                self.assertEqual(os.environ['GH_HOST'], 'github.com')
+            self.assertNotIn('GH_TOKEN', os.environ)
+            installed.assert_not_called()
+            native.assert_not_called()
+        for expiry in (1, True, float('nan'), 'later'):
+            stale = json.dumps({'tokens': {'access_token': 'gho_paired_synthetic_only', 'expires_at': expiry}}).encode()
+            with self.subTest(expiry=expiry), self.assertRaisesRegex(release.Error, 'expired'):
+                release.credential_token(stale)
+
 
 if __name__ == '__main__':
     unittest.main()

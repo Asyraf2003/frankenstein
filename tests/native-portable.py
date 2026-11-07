@@ -334,6 +334,13 @@ class Portable(unittest.TestCase):
         installer = module('native_installer', ROOT / 'installer/install.py')
         bundle = self.case / 'installation.fpe'
         digest = fixture.create(bundle, 'synthetic-account-disk-only', recovery=False, account_password='1234')
+        github = kit.encoded({'tokens': {'access_token': 'gho_synthetic_paired_installer'}})
+        request = kit.encoded({'path': 'credentials/github.json', 'base64': base64.b64encode(github).decode()})
+        amended = subprocess.run([str(BRIDGE), 'amend-credential'],
+            input=struct.pack('>I', len(request)) + request + bundle.read_bytes(), capture_output=True, timeout=30)
+        self.assertEqual(amended.returncode, 0, 'Fixture amendment failed; private output withheld')
+        bundle.write_bytes(amended.stdout)
+        digest = kit.sha(bundle)
         args = SimpleNamespace(phone=None, provisioning_bundle=bundle, sha256=digest)
         staging = self.case / 'bootstrap'
         staging.mkdir()
@@ -341,6 +348,9 @@ class Portable(unittest.TestCase):
         self.assertEqual(config['username'], 'proof')
         self.assertEqual(password, '1234')
         self.assertEqual(disk, 'synthetic-account-disk-only')
+        import releases
+        with patch.dict(os.environ, {}, clear=True), releases.owner_credentials(supplied['github_credentials']):
+            self.assertEqual(os.environ['GH_TOKEN'], 'gho_synthetic_paired_installer')
         supplied['recheck']()
         restored = self.case / 'encrypted-root-fixture'
         supplied['restore'](restored)

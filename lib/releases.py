@@ -29,28 +29,35 @@ def user_token(home, uid):
     info = path.stat()
     if not path.is_file() or info.st_uid != uid or info.st_mode & 0o077 or info.st_size > 16384:
         raise Error('GitHub credentials must remain private and owned by the invoking user')
+    return credential_token(path.read_bytes())
+
+
+def credential_token(data):
+    """Validate a verified paired record without refreshing its phone-owned token."""
+    if not isinstance(data, bytes) or len(data) > 16384:
+        raise Error('invalid stored GitHub credentials')
     try:
-        tokens = json.loads(path.read_bytes())['tokens']
+        tokens = json.loads(data)['tokens']
         token = tokens['access_token']
         expires = tokens.get('expires_at', float('inf'))
     except (ValueError, KeyError, TypeError):
         raise Error('invalid stored GitHub credentials') from None
     if not isinstance(token, str) or not re.fullmatch('[A-Za-z0-9_]{16,4096}', token):
         raise Error('invalid stored GitHub token')
-    if not isinstance(expires, (int, float)) or expires <= time.time() * 1000 + 120000:
+    if type(expires) not in (int, float) or not expires > time.time() * 1000 + 120000:
         raise Error('GitHub session expired; refresh on the paired phone and sync before this operation')
     return token
 
 
 @contextmanager
-def owner_credentials():
+def owner_credentials(paired_credentials=None):
     """Let sudo use the invoking owner's session without putting tokens in argv/files."""
     saved = {name: os.environ.get(name) for name in ('GH_TOKEN', 'GH_HOST')}
     try:
         uid = int(os.environ.get('SUDO_UID', os.getuid())) if os.geteuid() == 0 else os.getuid()
         owner = pwd.getpwuid(uid)
         if not os.environ.get('GH_TOKEN'):
-            token = user_token(owner.pw_dir, uid)
+            token = credential_token(paired_credentials()) if paired_credentials else user_token(owner.pw_dir, uid)
             if token is None and os.geteuid() == 0 and uid != 0:
                 result = subprocess.run(['/usr/sbin/runuser', '-u', owner.pw_name, '--', '/usr/bin/gh',
                                          'auth', 'token', '--hostname', 'github.com'], capture_output=True, text=True, timeout=30)
