@@ -1,4 +1,4 @@
-"""Provision a complete age opening identity, recovery capsule and verified state.
+"""Provision an age opening identity, optional recovery capsule and verified state.
 
 FPE1 is transport framing, not an encryption format. Its header contains a
 portable secret identity. It MUST remain outside Git in private local storage,
@@ -23,12 +23,13 @@ MAX_HEADER = 65536
 MAX_ARCHIVE = 8 * 1024**3 - MAX_HEADER - 8
 
 
-def create(staging, identity, context, capsule, capsule_digest, destination):
+def create(staging, identity, context, capsule, capsule_digest, destination, *, kit_id=None):
     destination = kit.outside_git(destination)
     identity = kit.outside_git(identity)
     kit.require(identity.is_file() and identity.stat().st_mode & 0o077 == 0
                 and identity.stat().st_size <= 4096, 'PORTABLE_IDENTITY_NOT_PRIVATE')
-    recovery = opening.inspect(capsule, capsule_digest)
+    kit.require((capsule is None) == (capsule_digest is None), 'PORTABLE_RECOVERY_SELECTION_INVALID')
+    recovery = opening.inspect(capsule, capsule_digest) if capsule is not None else None
     kit.require(not destination.exists(), 'PORTABLE_DESTINATION_EXISTS')
     kit.private_directories(destination.parent)
     with tempfile.TemporaryDirectory(prefix='.portable-create-', dir=destination.parent) as temporary:
@@ -37,20 +38,21 @@ def create(staging, identity, context, capsule, capsule_digest, destination):
         opening.private_write(copied_identity, identity.read_bytes())
         recipient = opening.native(['age-keygen', '-y', str(copied_identity)]).decode().strip()
         archive = work / 'vault.age'
-        kit.create(staging, context, [recipient, recovery['recipient']], archive)
+        kit.create(staging, context, [recipient] + ([recovery['recipient']] if recovery else []), archive, kit_id=kit_id)
         proof = kit.inspect(archive, copied_identity, context)
         kit.require(archive.stat().st_size <= MAX_ARCHIVE, 'PORTABLE_TOO_LARGE')
-        header = {'schema': 1, 'identity': copied_identity.read_text(), 'context': kit.context(context),
+        header = {'schema': 1 if recovery else 2, 'identity': copied_identity.read_text(), 'context': kit.context(context),
                   'archive_sha256': proof['archive_sha256'],
                   'recovery_manifest_sha256': capsule_digest,
                   'recovery': {name: base64.b64encode(kit.safe(capsule / name).read_bytes()).decode()
-                               for name in sorted(opening.FILES)}}
+                               for name in sorted(opening.FILES)} if recovery else None}
         # Revalidate the copied recovery capsule; a source change cannot be approved.
-        check = work / 'check-recovery'
-        check.mkdir(mode=0o700)
-        for name, content in header['recovery'].items():
-            opening.private_write(check / name, base64.b64decode(content, validate=True))
-        opening.inspect(check, capsule_digest)
+        if recovery:
+            check = work / 'check-recovery'
+            check.mkdir(mode=0o700)
+            for name, content in header['recovery'].items():
+                opening.private_write(check / name, base64.b64decode(content, validate=True))
+            opening.inspect(check, capsule_digest)
         content = kit.encoded(header)
         kit.require(len(content) <= MAX_HEADER, 'PORTABLE_HEADER_TOO_LARGE')
         packed = work / 'bundle'
@@ -79,20 +81,24 @@ def unpack(source, work):
         header = kit.decode(stream.read(size))
         kit.require(isinstance(header, dict) and set(header) == {'schema', 'identity', 'context',
                     'archive_sha256', 'recovery_manifest_sha256', 'recovery'} and
-                    type(header['schema']) is int and header['schema'] == 1, 'PORTABLE_HEADER_INVALID')
+                    type(header['schema']) is int and header['schema'] in (1, 2), 'PORTABLE_HEADER_INVALID')
         kit.context(header['context'])
         kit.require(isinstance(header['identity'], str) and 0 < len(header['identity']) <= 4096,
                     'PORTABLE_IDENTITY_INVALID')
         kit.require(isinstance(header['archive_sha256'], str) and
                     re.fullmatch('[0-9a-f]{64}', header['archive_sha256']), 'PORTABLE_HASH_INVALID')
-        kit.require(isinstance(header['recovery'], dict) and set(header['recovery']) == opening.FILES,
-                    'PORTABLE_RECOVERY_INVALID')
-        recovery = work / 'recovery'
-        recovery.mkdir(mode=0o700)
-        for name, content in header['recovery'].items():
-            kit.require(isinstance(content, str), 'PORTABLE_RECOVERY_INVALID')
-            opening.private_write(recovery / name, base64.b64decode(content, validate=True))
-        opening.inspect(recovery, header['recovery_manifest_sha256'])
+        if header['schema'] == 1:
+            kit.require(isinstance(header['recovery'], dict) and set(header['recovery']) == opening.FILES,
+                        'PORTABLE_RECOVERY_INVALID')
+            recovery = work / 'recovery'
+            recovery.mkdir(mode=0o700)
+            for name, content in header['recovery'].items():
+                kit.require(isinstance(content, str), 'PORTABLE_RECOVERY_INVALID')
+                opening.private_write(recovery / name, base64.b64decode(content, validate=True))
+            opening.inspect(recovery, header['recovery_manifest_sha256'])
+        else:
+            kit.require(header['recovery'] is None and header['recovery_manifest_sha256'] is None,
+                        'PORTABLE_RECOVERY_INVALID')
         opening.private_write(work / 'identity.txt', header['identity'].encode())
         with (work / 'vault.age').open('xb') as output:
             os.fchmod(output.fileno(), 0o600)
@@ -124,7 +130,8 @@ def restore(source, destination, expected_bundle):
             if path.is_file():
                 with path.open('rb') as file:
                     os.fsync(file.fileno())
-        kit.sync_directory(ready / 'recovery')
+        if (ready / 'recovery').exists():
+            kit.sync_directory(ready / 'recovery')
         kit.sync_directory(ready)
         kit.publish_directory(ready, destination)
     return header['context']
@@ -134,9 +141,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     build = sub.add_parser('create')
-    for name in ('staging', 'identity', 'context', 'capsule', 'output'):
+    for name in ('staging', 'identity', 'context', 'output'):
         build.add_argument('--' + name, type=Path, required=True)
-    build.add_argument('--capsule-sha256', required=True)
+    build.add_argument('--capsule', type=Path, help='optional independent recovery capsule')
+    build.add_argument('--capsule-sha256', help='required when --capsule is supplied')
     recover = sub.add_parser('restore')
     recover.add_argument('--source', type=Path, required=True)
     recover.add_argument('--output', type=Path, required=True)

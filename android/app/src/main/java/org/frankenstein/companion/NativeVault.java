@@ -61,6 +61,52 @@ final class NativeVault {
         args.add(executable);
         args.add(selected == null ? "verify" : "read");
         if (selected != null) args.add(selected);
+        return new JSONObject(new String(run(input, length, args, 3 * 1024 * 1024), StandardCharsets.UTF_8));
+    }
+    String enroll(BlobStore store, JSONObject request) throws Exception {
+        if (!current().equals(EMPTY)) throw new IOException("An existing vault must not be replaced by enrollment");
+        byte[] input = request.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bundle = null;
+        try {
+            if (input.length > 2 * 1024 * 1024) throw new IOException("Enrollment exceeds limit");
+            bundle = run(new ByteArrayInputStream(input), input.length,
+                Arrays.asList(executable, "enroll"), 4 * 1024 * 1024);
+            String id = Identity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bundle));
+            store.put(id, bundle.length, new ByteArrayInputStream(bundle));
+            activate(store, id, EMPTY);
+            return id;
+        } finally {
+            Arrays.fill(input, (byte)0);
+            if (bundle != null) Arrays.fill(bundle, (byte)0);
+        }
+    }
+    String amendGitHub(BlobStore store, String expected, JSONObject credential) throws Exception {
+        if (expected.equals(EMPTY) || !current().equals(expected)) throw new IOException("Vault conflict: selected generation changed");
+        byte[] secret = credential.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] request = new JSONObject().put("path", "credentials/github.json")
+            .put("base64", android.util.Base64.encodeToString(secret, android.util.Base64.NO_WRAP))
+            .toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bundle = null;
+        try (DataInputStream original = store.open(expected)) {
+            long length = original.readLong();
+            if (length > 16 * 1024 * 1024 || secret.length > 65536) throw new IOException("GitHub onboarding supports vaults up to 16 MiB");
+            ByteArrayOutputStream prefix = new ByteArrayOutputStream();
+            DataOutputStream framed = new DataOutputStream(prefix);
+            framed.writeInt(request.length);
+            framed.write(request);
+            InputStream input = new SequenceInputStream(new ByteArrayInputStream(prefix.toByteArray()), original);
+            bundle = run(input, prefix.size() + length, Arrays.asList(executable, "amend-github"), 16 * 1024 * 1024);
+            String id = Identity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bundle));
+            store.put(id, bundle.length, new ByteArrayInputStream(bundle));
+            activate(store, id, expected);
+            return id;
+        } finally {
+            Arrays.fill(secret, (byte)0);
+            Arrays.fill(request, (byte)0);
+            if (bundle != null) Arrays.fill(bundle, (byte)0);
+        }
+    }
+    private byte[] run(InputStream input, long length, List<String> args, int maximum) throws Exception {
         Process process = new ProcessBuilder(args).start();
         Timer watchdog = new Timer(true);
         watchdog.schedule(new TimerTask() { public void run() { process.destroyForcibly(); } }, 300000);
@@ -81,10 +127,10 @@ final class NativeVault {
         Thread worker = new Thread(producer, "frankenstein-vault-input");
         worker.start();
         try {
-            byte[] result = readBounded(process.getInputStream(), 3 * 1024 * 1024);
+            byte[] result = readBounded(process.getInputStream(), maximum);
             if (!process.waitFor(5, TimeUnit.SECONDS) || process.exitValue() != 0) throw new IOException("Vault verification failed");
             producer.get(5, TimeUnit.SECONDS);
-            return new JSONObject(new String(result, StandardCharsets.UTF_8));
+            return result;
         } finally {
             watchdog.cancel();
             process.destroyForcibly();
