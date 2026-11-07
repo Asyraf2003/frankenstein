@@ -17,7 +17,7 @@ TARGET = Path('/mnt/frankenstein')
 MAPPER = 'frankenstein-root'
 BASE = ['base', 'linux', 'linux-lts', 'linux-firmware', 'mkinitcpio', 'cryptsetup',
         'e2fsprogs', 'dosfstools', 'sudo', 'networkmanager', 'python', 'git',
-        'age', 'android-tools', 'openssl', 'github-cli',
+        'age', 'android-tools', 'openssl', 'github-cli', 'rclone',
         'openbox', 'xorg-server', 'xorg-xinit', 'xorg-xsetroot', 'dbus', 'python-pyxdg',
         'xterm', 'thunar', 'rofi', 'dunst', 'ttf-dejavu', 'playerctl', 'pipewire',
         'pipewire-pulse', 'wireplumber', 'polkit']
@@ -243,6 +243,8 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
                   f'options rd.luks.name={uuid}={MAPPER} root=/dev/mapper/{MAPPER} rw\n')
         user = config['username']
         chroot('useradd', '--create-home', '--groups', 'wheel', '--shell', '/bin/bash', user)
+        for folder in ('downloads', 'media', 'documents'):
+            chroot('install', '-d', '-m', '0700', '-o', user, '-g', user, '/home/' + user + '/' + folder)
         chroot('chpasswd', secret=user + ':' + password + '\n')
         if supplied:
             private = TARGET / 'home' / user / '.local/state/frankenstein'

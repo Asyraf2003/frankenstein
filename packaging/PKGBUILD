@@ -15,7 +15,7 @@ check() {
 }
 
 package_frankenstein-core() {
-    depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep')
+    depends=('bash' 'python' 'pacman' 'systemd' 'util-linux' 'coreutils' 'grep' 'rclone>=1.66')
     optdepends=('sudo: privileged package and radio actions'
                 'docker: enrolled Vaultwarden service'
                 'docker-compose: Vaultwarden service lifecycle'
@@ -38,6 +38,12 @@ package_frankenstein-core() {
     install -Dm644 lib/engine_update.py "$pkgdir/usr/lib/frankenstein/engine_update.py"
     install -Dm644 lib/provision.py "$pkgdir/usr/lib/frankenstein/provision.py"
     install -Dm644 lib/device_sync.py "$pkgdir/usr/lib/frankenstein/device_sync.py"
+    install -Dm644 lib/drive_sync.py "$pkgdir/usr/lib/frankenstein/drive_sync.py"
+    for unit in frankenstein-drive.service frankenstein-drive.timer frankenstein-drive-setup.service; do
+        install -Dm644 "assets/$unit" "$pkgdir/usr/lib/systemd/user/$unit"
+    done
+    install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
+    ln -s ../frankenstein-drive-setup.service "$pkgdir/usr/lib/systemd/user/default.target.wants/frankenstein-drive-setup.service"
     install -Dm644 lib/vault_provision.py "$pkgdir/usr/lib/frankenstein/vault_provision.py"
     install -Dm644 assets/frankenstein-sync.service "$pkgdir/usr/lib/systemd/user/frankenstein-sync.service"
     install -Dm644 vault/recovery_kit.py "$pkgdir/usr/lib/frankenstein/vault/recovery_kit.py"
