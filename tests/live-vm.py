@@ -152,6 +152,7 @@ def main():
         vm.child.sendline(SECRET)
         vm.child.expect(r'\$ ')
         vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
+        vm.command('test -r /etc/passwd && test -r /etc/profile && test -x /var/lib && id -un | grep -qx proof')
         vm.command("test -r ~/.local/state/frankenstein/ecosystem/identity.txt && test \"$(stat -c %a ~/.local/state/frankenstein/ecosystem/identity.txt)\" = 600")
         vm.command("grep -qx '{\"fixture\":\"portable-tuning-preserved\"}' ~/.local/state/frankenstein/ecosystem/state/desired/tuning.json")
         vm.command('frankenstein vault inspect --candidate ~/.local/state/frankenstein/ecosystem/vault.age --identity ~/.local/state/frankenstein/ecosystem/identity.txt --context ~/.local/state/frankenstein/ecosystem/context.json')
