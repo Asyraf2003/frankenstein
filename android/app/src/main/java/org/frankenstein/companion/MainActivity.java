@@ -44,6 +44,19 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); show(intent); }
     private void show(Intent intent) {
+        if (intent.getBooleanExtra("setup_if_empty", false)) {
+            approvedPeer = null;
+            show(new Intent());
+            try {
+                if (new NativeVault(this).current().equals(NativeVault.EMPTY)) {
+                    clearChoices();
+                    status.setText("Both devices are empty. Create your vault on this phone, then sync again from the PC.");
+                    action("Next: set up this phone", () -> authenticate("Set up Frankenstein", "Confirm ownership before creating a vault", 3));
+                    action("Back", this::addVaultButton);
+                }
+            } catch (Exception error) { status.setText("Protected storage is unavailable."); }
+            return;
+        }
         // Returning via the launcher resumes this explicitly approved in-memory
         // session. An untrusted pairing intent still goes through owner approval.
         if (intent.getStringExtra("peer_certificate") == null && approvedPeer != null) {
@@ -67,8 +80,15 @@ public final class MainActivity extends Activity {
             certificate.checkValidity();
             certificate.verify(certificate.getPublicKey());
             String fingerprint = Identity.fingerprint(certificate);
+            KeyguardManager lock = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+            if (!lock.isDeviceLocked() && new TrustedPeers(this).contains(certificate)) {
+                approvedPeer = certificate;
+                approvedAt = android.os.SystemClock.elapsedRealtime();
+                resumeApprovedPeer();
+                return;
+            }
             status.setText("Approve this PC?\n\nCompare this fingerprint with the PC before accepting:\n\n" + fingerprint +
-                "\n\nAn accepted device can send and retrieve your portable state while this screen is open.");
+                "\n\nAn accepted device can send and retrieve your portable state while this screen is open. This PC will be remembered for reconnection while your phone is unlocked. You can forget trusted PCs at any time.");
             Button accept = new Button(this);
             accept.setText("Accept device");
             accept.setFilterTouchesWhenObscured(true);
@@ -89,6 +109,19 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 7) {
+            if (result == RESULT_OK) {
+                approvedPeer = null;
+                if (server != null) { server.close(); server = null; }
+                try { new TrustedPeers(this).forgetAll(); show(new Intent()); status.setText("Trusted PCs forgotten. New access requires approval."); }
+                catch (Exception error) { status.setText("Trust reset failed. USB access is stopped."); }
+            }
+            return;
+        }
+        if (request == 6) {
+            if (result == RESULT_OK) startActivity(new Intent(this, GitHubActivity.class));
+            return;
+        }
         if (request == 3) {
             if (result == RESULT_OK) {
                 try {
@@ -129,6 +162,8 @@ public final class MainActivity extends Activity {
         X509Certificate peer = pending;
         pending = null;
         if (request != 1 || result != RESULT_OK || peer == null) { show(new Intent()); return; }
+        try { new TrustedPeers(this).remember(peer); }
+        catch (Exception error) { status.setText("PC trust could not be saved. Access remains closed."); return; }
         approvedPeer = peer;
         approvedAt = android.os.SystemClock.elapsedRealtime();
         resumeApprovedPeer();
@@ -160,6 +195,7 @@ public final class MainActivity extends Activity {
                         stop.setText("Stop device access");
                         stop.setOnClickListener(view -> { approvedPeer = null; show(new Intent()); });
                         layout.addView(stop);
+                        addForgetButton();
                     } catch (Exception error) { status.setText("USB listener could not start. Access remains closed."); }
                 });
             } catch (Exception error) { runOnUiThread(() -> {
@@ -187,27 +223,71 @@ public final class MainActivity extends Activity {
         }
         if (server != null) { server.close(); server = null; status.setText("USB access stopped while the app is closed."); }
     }
+    private void clearChoices() {
+        while (layout.getChildCount() > 1) layout.removeViewAt(1);
+    }
+    private void action(String title, Runnable next) {
+        Button button = new Button(this);
+        button.setText(title);
+        button.setFilterTouchesWhenObscured(true);
+        button.setOnClickListener(view -> next.run());
+        layout.addView(button);
+    }
     private void addVaultButton() {
-        Button setup = new Button(this);
-        setup.setText("Set up this phone");
-        setup.setFilterTouchesWhenObscured(true);
-        setup.setOnClickListener(view -> authenticate("Set up Frankenstein", "Confirm ownership before creating a vault", 3));
-        layout.addView(setup);
-        Button backup = new Button(this);
-        backup.setText("Export encrypted recovery backup");
-        backup.setFilterTouchesWhenObscured(true);
-        backup.setOnClickListener(view -> authenticate("Export recovery backup", "Confirm ownership", 4));
-        layout.addView(backup);
-        Button open = new Button(this);
-        open.setText("Open my vault");
-        open.setFilterTouchesWhenObscured(true);
-        open.setOnClickListener(view -> {
-            KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
-            Intent unlock = keyguard.createConfirmDeviceCredentialIntent("Open Frankenstein vault", "Confirm ownership");
-            if (unlock != null) startActivityForResult(unlock, 2);
-            else status.setText("Set a device screen lock before opening the vault.");
+        clearChoices();
+        try {
+            if (new NativeVault(this).current().equals(NativeVault.EMPTY)) {
+                status.setText("Welcome to Frankenstein\n\nDoes another PC already have your Frankenstein data? Receive that copy, or set up independently on this phone.");
+                action("Receive from my PC", this::connectionStep);
+                action("Set up on this phone", () -> authenticate("Set up Frankenstein", "Confirm ownership before creating a vault", 3));
+            } else {
+                status.setText("Your vault is ready\n\nWhat would you like to do?");
+                action("Encrypted backup", this::backupStep);
+                action("Open my vault", () -> authenticate("Open Frankenstein vault", "Confirm ownership", 2));
+            }
+        } catch (Exception error) {
+            status.setText("Protected storage is unavailable. Existing state is preserved.");
+            action("Retry", this::addVaultButton);
+        }
+    }
+    private void connectionStep() {
+        clearChoices();
+        status.setText("Connect to your PC\n\nConnect USB and start Frankenstein sync on the PC. Confirm its fingerprint here when asked. A trusted PC reconnects while this phone is unlocked and this screen is open.\n\nThe populated device supplies an empty one. If both differ, choose the copy on your PC before anything is replaced.");
+        action("Back", this::addVaultButton);
+    }
+    private void backupStep() {
+        clearChoices();
+        status.setText("Encrypted backup\n\nWhere would you like to save it?");
+        action("GitHub private repository", () -> authenticate("GitHub private backup", "Confirm ownership before account access", 6));
+        action("Save a ZIP file", () -> {
+            clearChoices();
+            status.setText("Save encrypted backup\n\nThe next screen chooses where to save the ZIP. Keep it outside this phone. Restoring requires your optional recovery passphrase or an existing paired device key.");
+            action("Next: choose save location", () -> authenticate("Export encrypted backup", "Confirm ownership", 4));
+            action("Back", this::backupStep);
         });
-        layout.addView(open);
+        action("Back", this::addVaultButton);
+    }
+    @Override public boolean onCreateOptionsMenu(android.view.Menu menu) {
+        menu.add("PC connections");
+        return true;
+    }
+    @Override public boolean onOptionsItemSelected(android.view.MenuItem item) {
+        if (enrollment != null) { enrollment.clear(); enrollment = null; }
+        vaultUnlocked = false;
+        revision++;
+        clearChoices();
+        status.setText("PC connections\n\nYou can stop USB access or forget all trusted PCs. Forgetting requires approval on every future connection.");
+        action("Stop USB access", () -> {approvedPeer=null;show(new Intent());});
+        addForgetButton();
+        action("Back", () -> show(new Intent()));
+        return true;
+    }
+    private void addForgetButton() {
+        Button forget = new Button(this);
+        forget.setText("Forget trusted PCs");
+        forget.setFilterTouchesWhenObscured(true);
+        forget.setOnClickListener(view -> authenticate("Forget trusted PCs", "Future connections will need approval again", 7));
+        layout.addView(forget);
     }
     private void authenticate(String title, String message, int request) {
         KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
@@ -216,6 +296,7 @@ public final class MainActivity extends Activity {
         else startActivityForResult(unlock, request);
     }
     private void enroll(org.json.JSONObject request) {
+        boolean recoveryEnabled = !request.optString("recovery_passphrase").isEmpty();
         enrollment = null;
         while (layout.getChildCount() > 1) layout.removeViewAt(1);
         status.setText("Creating and verifying your encrypted vault…");
@@ -230,13 +311,16 @@ public final class MainActivity extends Activity {
             boolean accepted = success;
             runOnUiThread(() -> {
                 if (destroyed || revision != selectedRevision) return;
-                status.setText(accepted ? "Vault created. Export its encrypted backup now and keep your recovery passphrase separately. GitHub backup still needs setup." :
+                status.setText(accepted ? (recoveryEnabled ?
+                    "Vault created. Export its encrypted backup and keep your recovery passphrase separately. GitHub backup still needs setup." :
+                    "Vault created without a recovery passphrase. Encrypted backups require an existing device key or paired copy. GitHub backup can now be configured.") :
                     "Setup failed or another vault became active. Existing state was preserved.");
-                addVaultButton();
+                action(accepted ? "Next" : "Back", this::addVaultButton);
             });
         }, "frankenstein-enrollment").start();
     }
     private void exportBackup(String selected, android.net.Uri uri) {
+        clearChoices();
         status.setText("Verifying and exporting encrypted backup…");
         new Thread(() -> {
             boolean success = false;
@@ -247,8 +331,11 @@ public final class MainActivity extends Activity {
             } catch (Exception error) { /* Partial provider output must not be announced as a backup. */ }
             boolean complete = success;
             runOnUiThread(() -> {
-                if (!destroyed) status.setText(complete ? "Encrypted backup exported. Keep it outside this phone, with the recovery passphrase stored separately." :
-                    "Export failed. The selected file may be incomplete; export again. Your local vault is unchanged.");
+                if (!destroyed) {
+                    status.setText(complete ? "Encrypted backup exported. Keep it outside this phone. Restoring requires your recovery passphrase or an existing paired device key." :
+                        "Export failed. The selected file may be incomplete. Your local vault is unchanged.");
+                    action(complete ? "Done" : "Back", this::addVaultButton);
+                }
             });
         }, "frankenstein-backup-export").start();
     }
@@ -275,7 +362,9 @@ public final class MainActivity extends Activity {
                             layout.addView(back);
                         } else {
                             org.json.JSONObject files = result.getJSONObject("manifest").getJSONObject("files");
-                            status.setText("Vault ready\n" + files.length() + " verified items. This phone can provide state to a new PC.");
+                            status.setText("Vault ready\n" + files.length() + " verified items.\nUpdated: " +
+                                result.getJSONObject("manifest").getString("created_at") + "\nThis phone can provide state to a new PC.");
+                            action("Back", () -> {vaultUnlocked=false;addVaultButton();});
                             java.util.Iterator<String> names = files.keys();
                             while (names.hasNext()) {
                                 String name = names.next();

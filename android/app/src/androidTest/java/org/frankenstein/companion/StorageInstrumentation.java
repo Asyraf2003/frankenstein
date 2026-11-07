@@ -58,6 +58,17 @@ public final class StorageInstrumentation extends Instrumentation {
                     @Override public File getNoBackupFilesDir() { return scratch; }
                 };
                 BlobStore isolatedStore = LocalStorage.open(isolated);
+                TrustedPeers trusted = new TrustedPeers(isolated);
+                if (trusted.contains(Identity.certificate())) throw new AssertionError("Unknown peer trusted");
+                trusted.remember(Identity.certificate());
+                if (!new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Trust did not survive reopening");
+                trusted.forgetAll();
+                if (new TrustedPeers(isolated).contains(Identity.certificate())) throw new AssertionError("Revoked peer trusted");
+                Files.write(new File(scratch, "trusted-peers").toPath(), new byte[]{1, 2, 3});
+                boolean invalidTrust = false;
+                try { new TrustedPeers(isolated).contains(Identity.certificate()); }
+                catch (IOException expected) { invalidTrust = true; }
+                if (!invalidTrust) throw new AssertionError("Corrupt trust pointer accepted");
                 NativeVault isolatedVault = new NativeVault(isolated);
                 String selectedId = Identity.hex(MessageDigest.getInstance("SHA-256").digest(fixture));
                 isolatedStore.put(selectedId, fixture.length, new ByteArrayInputStream(fixture));
@@ -130,6 +141,25 @@ public final class StorageInstrumentation extends Instrumentation {
                     }
                 }
                 if (count != 6) throw new AssertionError("Incomplete ciphertext backup");
+                GitHubStorageChecks.run(isolated, store, enrolled);
+                File deviceOnly = new File(enrollmentScratch, "without-recovery");
+                if (!deviceOnly.mkdir()) throw new IOException("Cannot reserve device-key fixture");
+                android.content.Context deviceContext = new android.content.ContextWrapper(getTargetContext()) {
+                    @Override public File getNoBackupFilesDir() { return deviceOnly; }
+                };
+                request.put("recovery_passphrase", "");
+                Enrollment.add(files, "credentials/arch-install.json", new org.json.JSONObject()
+                    .put("password", "1234").put("disk_passphrase", "synthetic-disk-only"));
+                BlobStore deviceStore = LocalStorage.open(deviceContext);
+                NativeVault deviceVault = new NativeVault(deviceContext);
+                deviceVault.enroll(deviceStore, request);
+                GitHubStorageChecks.run(deviceContext, deviceStore, deviceVault, "github-device-key-fixture.zip");
+                // Synthetic-only survivor identity fixture, never the active owner vault.
+                File survivor = new File(getTargetContext().getExternalFilesDir(null), "github-device-key-fixture.fpe");
+                try (DataInputStream input = deviceStore.open(deviceVault.current()); OutputStream output = new FileOutputStream(survivor)) {
+                    long length = input.readLong();
+                    BlobStore.copy(input, output, length, MessageDigest.getInstance("SHA-256"));
+                }
             } finally {
                 try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(enrollmentScratch.toPath())) {
                     for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator)
@@ -141,7 +171,8 @@ public final class StorageInstrumentation extends Instrumentation {
             try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
             catch (Exception expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Native age accepted altered fixture");
-            result.putString("result", "PASS: AndroidKeyStore storage, tamper/final authentication, concurrent generation preservation, native phone enrollment and ciphertext-only recovery export");
+            GuidedNavigationChecks.run(this);
+            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub token journals, trusted peer revocation and guided navigation");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());

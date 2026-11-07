@@ -14,47 +14,74 @@ final class Enrollment {
     private boolean active = true;
     Enrollment(Activity activity, LinearLayout layout, TextView status,
                java.util.function.Consumer<JSONObject> submit) {
-        status.setText("Create your ecosystem\n\nChoose your Arch account and an independent recovery passphrase. " +
-            "Write the recovery passphrase outside your phone and PC. You must also export the encrypted backup; " +
-            "the passphrase alone cannot recover lost data. GitHub backup is not configured by this form yet.");
+        status.setText("Create your ecosystem\n\nChoose your Arch login/sudo account. Recovery passphrase is optional. " +
+            "Without it, encrypted backups require an existing device key or paired copy; losing all keys makes them unrecoverable. " +
+            "GitHub backup can be configured after setup.");
         EditText username = field(activity, layout, "Arch username (lowercase)", false);
         EditText hostname = field(activity, layout, "PC hostname", false);
         EditText zone = field(activity, layout, "Timezone", false);
         zone.setText(TimeZone.getDefault().getID());
         EditText email = field(activity, layout, "Google email (optional)", false);
-        EditText password = field(activity, layout, "Arch account password (12+ characters)", true);
+        EditText password = field(activity, layout, "Arch login/sudo password (4+ characters)", true);
         EditText repeatPassword = field(activity, layout, "Repeat account password", true);
         EditText diskPassword = field(activity, layout, "Disk unlock passphrase (12+ characters)", true);
         EditText repeatDisk = field(activity, layout, "Repeat disk unlock passphrase", true);
-        EditText phrase = field(activity, layout, "Recovery passphrase (20+ characters)", true);
-        EditText repeatPhrase = field(activity, layout, "Repeat recovery passphrase", true);
+        CheckBox recoveryEnabled = new CheckBox(activity);
+        recoveryEnabled.setText("Add an optional recovery passphrase");
+        layout.addView(recoveryEnabled);
+        LinearLayout recoveryFields = new LinearLayout(activity);
+        recoveryFields.setOrientation(LinearLayout.VERTICAL);
+        layout.addView(recoveryFields);
+        EditText phrase = field(activity, recoveryFields, "Recovery passphrase (20+ characters, optional)", true);
+        EditText repeatPhrase = field(activity, recoveryFields, "Repeat recovery passphrase", true);
         CheckBox saved = new CheckBox(activity);
         saved.setText("I recorded my recovery passphrase outside these devices and will export the encrypted backup.");
-        layout.addView(saved);
+        recoveryFields.addView(saved);
+        recoveryFields.setVisibility(View.GONE);
+        recoveryEnabled.setOnCheckedChangeListener((button, checked) -> {
+            recoveryFields.setVisibility(checked ? View.VISIBLE : View.GONE);
+            if (!checked) { phrase.setText(""); repeatPhrase.setText(""); saved.setChecked(false); }
+        });
+        TextView validation = new TextView(activity);
+        validation.setTextColor(android.graphics.Color.rgb(150, 20, 20));
+        validation.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        layout.addView(validation);
+        Map<String,EditText> inputs = new LinkedHashMap<>();
+        inputs.put("username", username); inputs.put("hostname", hostname); inputs.put("timezone", zone);
+        inputs.put("password", password); inputs.put("repeat_password", repeatPassword);
+        inputs.put("disk", diskPassword); inputs.put("repeat_disk", repeatDisk);
+        inputs.put("recovery", phrase); inputs.put("repeat_recovery", repeatPhrase);
         Button create = new Button(activity);
         create.setText("Create encrypted vault");
         create.setFilterTouchesWhenObscured(true);
         create.setOnClickListener(view -> {
             if (!active) return;
             try {
+                Map<String,String> values = new LinkedHashMap<>();
+                for (Map.Entry<String,EditText> input : inputs.entrySet()) {
+                    input.getValue().setError(null);
+                    values.put(input.getKey(), input.getValue().getText().toString());
+                }
+                saved.setError(null);
+                Map<String,String> errors = EnrollmentValidation.errors(values, saved.isChecked(), recoveryEnabled.isChecked());
+                values.clear();
+                if (!errors.isEmpty()) {
+                    validation.setText("Vault was not created. Fix these fields:\n\n" + String.join("\n", errors.values()));
+                    for (Map.Entry<String,String> error : errors.entrySet()) {
+                        if (error.getKey().equals("saved")) saved.setError(error.getValue());
+                        else inputs.get(error.getKey()).setError(error.getValue());
+                    }
+                    String first = errors.keySet().iterator().next();
+                    if (!first.equals("saved")) inputs.get(first).requestFocus();
+                    return;
+                }
+                validation.setText("");
                 String user = username.getText().toString();
                 String host = hostname.getText().toString();
                 String timezone = zone.getText().toString();
                 String account = password.getText().toString();
                 String recovery = phrase.getText().toString();
-                if (!user.matches("[a-z][a-z0-9_-]{0,30}") || user.equals("root") ||
-                    !host.matches("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?") ||
-                    !Arrays.asList(TimeZone.getAvailableIDs()).contains(timezone))
-                    throw new IllegalArgumentException("Check the username, hostname and timezone.");
-                if (!secret(account, 12) || !account.equals(repeatPassword.getText().toString()))
-                    throw new IllegalArgumentException("Account passwords must match and contain at least 12 characters.");
-                if (!secret(recovery, 20) || !recovery.equals(repeatPhrase.getText().toString()) || recovery.equals(account) || !saved.isChecked())
-                    throw new IllegalArgumentException("Use a separate matching recovery passphrase, at least 20 characters, and confirm its external copy.");
                 String diskSecret = diskPassword.getText().toString();
-                if (!secret(diskSecret, 12) || !diskSecret.equals(repeatDisk.getText().toString()))
-                    throw new IllegalArgumentException("Disk unlock passphrases must match and contain at least 12 characters.");
-                if (diskSecret.equals(recovery))
-                    throw new IllegalArgumentException("Keep the recovery passphrase separate from the disk unlock passphrase.");
                 JSONObject files = new JSONObject();
                 add(files, "desired/arch.json", new JSONObject().put("username", user).put("hostname", host)
                     .put("timezone", timezone).put("packages", new JSONArray()));
@@ -68,26 +95,44 @@ final class Enrollment {
                 clear();
                 create.setEnabled(false);
                 submit.accept(request);
-            } catch (IllegalArgumentException error) { status.setText(error.getMessage()); }
-            catch (JSONException error) { status.setText("Setup could not be prepared. No vault was changed."); }
+            } catch (JSONException error) { validation.setText("Setup could not be prepared. No vault was changed. Please try again."); }
         });
         layout.addView(create);
     }
     static void add(JSONObject files, String name, JSONObject content) throws JSONException {
         files.put(name, android.util.Base64.encodeToString(content.toString().getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP));
     }
-    private static boolean secret(String value, int minimum) {
-        return value.codePointCount(0, value.length()) >= minimum && value.length() <= 4096 &&
-            value.indexOf('\n') < 0 && value.indexOf('\r') < 0 && value.indexOf('\0') < 0;
-    }
     private EditText field(Activity activity, LinearLayout layout, String label, boolean secret) {
+        TextView caption = new TextView(activity);
+        caption.setText(label);
+        layout.addView(caption);
         EditText field = new EditText(activity);
         field.setHint(label);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
         field.setSaveEnabled(false);
         field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        layout.addView(field);
+        if (secret) {
+            LinearLayout row = new LinearLayout(activity);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.addView(field, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            Button visibility = new Button(activity);
+            visibility.setText("Show");
+            visibility.setContentDescription("Show " + label);
+            visibility.setFilterTouchesWhenObscured(true);
+            visibility.setOnClickListener(view -> {
+                if (!active) return;
+                boolean hidden = field.getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod;
+                int cursor = field.getSelectionStart();
+                field.setTransformationMethod(hidden ? android.text.method.HideReturnsTransformationMethod.getInstance() :
+                    android.text.method.PasswordTransformationMethod.getInstance());
+                if (cursor >= 0) field.setSelection(Math.min(cursor, field.length()));
+                visibility.setText(hidden ? "Hide" : "Show");
+                visibility.setContentDescription((hidden ? "Hide " : "Show ") + label);
+            });
+            row.addView(visibility);
+            layout.addView(row);
+        } else layout.addView(field);
         fields.add(field);
         return field;
     }

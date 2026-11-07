@@ -15,6 +15,7 @@ android {
         versionName '0.1.0-dev'
         buildConfigField 'String', 'ENGINE_REVISION', '"' + sourceRevision + '"'
         testInstrumentationRunner 'org.frankenstein.companion.StorageInstrumentation'
+        manifestPlaceholders = [appLabel: 'Frankenstein (development)']
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     sourceSets {
@@ -23,7 +24,10 @@ android {
         androidTest.assets.srcDir layout.buildDirectory.dir('generated/test-fixtures')
     }
     packaging { jniLibs { useLegacyPackaging = true } }
-    buildTypes { debug { applicationIdSuffix '.dev' } }
+    buildTypes { debug {
+        applicationIdSuffix providers.gradleProperty('isolatedProof').isPresent() ? '.dev.proof' : '.dev'
+        if (providers.gradleProperty('isolatedProof').isPresent()) manifestPlaceholders = [appLabel: 'Frankenstein (isolated test)']
+    } }
 }
 tasks.register('requireNativeVault') {
     doLast {
@@ -36,4 +40,5 @@ tasks.named('preBuild').configure { dependsOn 'requireNativeVault' }
 dependencies {
     implementation 'com.google.crypto.tink:tink-android:1.24.0'
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }
