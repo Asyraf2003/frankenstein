@@ -15,7 +15,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: python3 tests/native-vaultwarden-provision.py
+      - name: Install public runtime for the unprivileged owner proof
+        run: |
+          sudo install -d -m755 /usr/lib/frankenstein/{vault,transport}
+          sudo install -m644 lib/*.py /usr/lib/frankenstein/
+          sudo install -m644 vault/*.py /usr/lib/frankenstein/vault/
+          sudo install -m644 transport/*.py /usr/lib/frankenstein/transport/
       - run: |
-          sudo python3 tests/native-vaultwarden.py \
+          sudo env FRANKENSTEIN_TEST_RUNTIME=/usr/lib/frankenstein python3 tests/native-vaultwarden.py \
             --image vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055 \
             --network-image tailscale/tailscale@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
