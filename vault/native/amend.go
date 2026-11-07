@@ -64,14 +64,18 @@ func amend(source io.Reader) ([]byte, error) {
 		return nil, invalid
 	}
 	local := identities[0].(*age.X25519Identity)
-	capsule := header["recovery"].(map[string]any)
-	recipientBytes, err := base64.StdEncoding.Strict().DecodeString(text(capsule["recipient.txt"]))
-	if err != nil {
-		return nil, invalid
-	}
-	emergency, err := age.ParseX25519Recipient(strings.TrimSpace(string(recipientBytes)))
-	if err != nil {
-		return nil, invalid
+	recipients := []age.Recipient{local.Recipient()}
+	if header["recovery"] != nil {
+		capsule := header["recovery"].(map[string]any)
+		recipientBytes, err := base64.StdEncoding.Strict().DecodeString(text(capsule["recipient.txt"]))
+		if err != nil {
+			return nil, invalid
+		}
+		emergency, err := age.ParseX25519Recipient(strings.TrimSpace(string(recipientBytes)))
+		if err != nil {
+			return nil, invalid
+		}
+		recipients = append(recipients, emergency)
 	}
 	decrypted, err := age.Decrypt(bytes.NewReader(bundle[8+headerSize:]), local)
 	if err != nil {
@@ -125,7 +129,7 @@ func amend(source io.Reader) ([]byte, error) {
 	if err = writer.Close(); err != nil {
 		return nil, err
 	}
-	encrypted, err := encrypt(archive.Bytes(), local.Recipient(), emergency)
+	encrypted, err := encrypt(archive.Bytes(), recipients...)
 	if err != nil {
 		return nil, err
 	}

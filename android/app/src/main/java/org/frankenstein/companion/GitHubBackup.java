@@ -12,6 +12,7 @@ final class GitHubBackup {
     static final int MAX_BACKUP = 8 * 1024 * 1024;
     static final Set<String> FILES = new HashSet<>(Arrays.asList("vault.age", "backup.json",
         "recovery/identity.age", "recovery/recipient.txt", "recovery/manifest.json"));
+    static final Set<String> DEVICE_FILES = new HashSet<>(Arrays.asList("vault.age", "backup.json"));
     private final GitHubClient client;
     private final String token;
     private final JSONObject user;
@@ -99,7 +100,7 @@ final class GitHubBackup {
         GitHubClient.Reply exists = client.api("GET",root+"/contents/frankenstein/backups/"+digest+"?ref="+selected.parent,token,null);
         if (exists.status != 404) throw new GitHubClient.Failure(exists.status == 200 ? "This backup already exists; download it to verify" : "Could not inspect backup destination");
         JSONArray entries = new JSONArray();
-        for (String path : new TreeSet<>(FILES)) {
+        for (String path : new TreeSet<>(files.keySet())) {
             client.check();
             byte[] bytes = files.get(path);
             JSONObject blob = client.object("POST",root+"/git/blobs",token,new JSONObject().put("encoding","base64")
@@ -116,7 +117,8 @@ final class GitHubBackup {
             .put("parents",new JSONArray().put(selected.parent))).getString("sha"));
         // Download and compare all ciphertext BEFORE making this commit visible.
         Map<String,byte[]> downloaded = downloadTree(selected.repository,tree,digest);
-        for (String path : FILES) if (!Arrays.equals(files.get(path),downloaded.get(path))) throw new GitHubClient.Failure("GitHub read-back mismatch");
+        if (!files.keySet().equals(downloaded.keySet())) throw new GitHubClient.Failure("GitHub read-back layout mismatch");
+        for (String path : files.keySet()) if (!Arrays.equals(files.get(path),downloaded.get(path))) throw new GitHubClient.Failure("GitHub read-back mismatch");
         lease(selected);
         // Sibling commits fail non-fast-forward even if another writer races the
         // preceding lease check. Never retry or silently rebase on a new parent.
@@ -150,7 +152,7 @@ final class GitHubBackup {
         for (String part : new String[]{"frankenstein","backups",digest}) selected = directory(repository,selected,part);
         Map<String,String> objects = new TreeMap<>();
         collect(repository,selected,"",objects);
-        if (!objects.keySet().equals(FILES)) throw new GitHubClient.Failure("Unexpected backup files");
+        if (!objects.keySet().equals(FILES) && !objects.keySet().equals(DEVICE_FILES)) throw new GitHubClient.Failure("Unexpected backup files");
         Map<String,byte[]> result = new TreeMap<>(); int total=0;
         for (Map.Entry<String,String> entry : objects.entrySet()) {
             JSONObject blob = client.object("GET","/repos/"+repository+"/git/blobs/"+entry.getValue(),token,null);
@@ -196,17 +198,24 @@ final class GitHubBackup {
             }
         }
         if (selection==null || context==null) throw new GitHubClient.Failure("Incomplete ciphertext export");
-        files.put("backup.json",new JSONObject().put("schema",1).put("ciphertext_sha256",selection.getString("archive_sha256"))
-            .put("context",context).put("recovery_manifest_sha256",selection.getString("recovery_manifest_sha256")).toString().getBytes(StandardCharsets.UTF_8));
+        files.put("backup.json",new JSONObject().put("schema",selection.getInt("schema")).put("ciphertext_sha256",selection.getString("archive_sha256"))
+            .put("context",context).put("recovery_manifest_sha256",selection.get("recovery_manifest_sha256")).toString().getBytes(StandardCharsets.UTF_8));
         validate(files); return files;
     }
     static String validate(Map<String,byte[]> files) throws Exception {
-        if (!files.keySet().equals(FILES)) throw new GitHubClient.Failure("Incomplete encrypted backup");
+        if (!files.keySet().equals(FILES) && !files.keySet().equals(DEVICE_FILES)) throw new GitHubClient.Failure("Incomplete encrypted backup");
         long total=0; for (byte[] bytes:files.values()) total+=bytes.length;
         if (total > MAX_BACKUP) throw new GitHubClient.Failure("Cloud backup exceeds 8 MiB limit");
-        for (String path:FILES) if (!path.equals("vault.age") && files.get(path).length>65536) throw new GitHubClient.Failure("Backup metadata exceeds limit");
-        JSONObject metadata=json(files.get("backup.json")), recovery=json(files.get("recovery/manifest.json"));
+        for (String path:files.keySet()) if (!path.equals("vault.age") && files.get(path).length>65536) throw new GitHubClient.Failure("Backup metadata exceeds limit");
+        JSONObject metadata=json(files.get("backup.json"));
         String digest=sha(files.get("vault.age"));
+        if (files.keySet().equals(DEVICE_FILES)) {
+            if (metadata.getInt("schema")!=2 || !metadata.has("recovery_manifest_sha256") || !metadata.isNull("recovery_manifest_sha256") ||
+                !digest.equals(metadata.getString("ciphertext_sha256"))) throw new GitHubClient.Failure("Device-key backup integrity mismatch");
+            metadata.getJSONObject("context");
+            return digest;
+        }
+        JSONObject recovery=json(files.get("recovery/manifest.json"));
         if (metadata.getInt("schema")!=1 || !digest.equals(metadata.getString("ciphertext_sha256")) ||
             !sha(files.get("recovery/manifest.json")).equals(metadata.getString("recovery_manifest_sha256")) ||
             recovery.getInt("schema")!=1 || !recovery.getString("purpose").equals("outer-kit-opening-v1") ||
@@ -220,10 +229,10 @@ final class GitHubBackup {
     static void recoveryZip(Map<String,byte[]> files, OutputStream target) throws Exception {
         String digest=validate(files); JSONObject metadata=json(files.get("backup.json"));
         try (ZipOutputStream zip=new ZipOutputStream(target)) {
-            for (String path: new TreeSet<>(FILES)) if (!path.equals("backup.json")) zipEntry(zip,path,files.get(path));
+            for (String path: new TreeSet<>(files.keySet())) if (!path.equals("backup.json")) zipEntry(zip,path,files.get(path));
             zipEntry(zip,"context.json",metadata.getJSONObject("context").toString().getBytes(StandardCharsets.UTF_8));
-            zipEntry(zip,"selection.json",new JSONObject().put("schema",1).put("archive_sha256",digest)
-                .put("recovery_manifest_sha256",metadata.getString("recovery_manifest_sha256")).toString().getBytes(StandardCharsets.UTF_8));
+            zipEntry(zip,"selection.json",new JSONObject().put("schema",metadata.getInt("schema")).put("archive_sha256",digest)
+                .put("recovery_manifest_sha256",metadata.get("recovery_manifest_sha256")).toString().getBytes(StandardCharsets.UTF_8));
         }
     }
     private static void zipEntry(ZipOutputStream zip,String path,byte[] bytes) throws IOException { zip.putNextEntry(new ZipEntry(path)); zip.write(bytes); zip.closeEntry(); }

@@ -103,10 +103,16 @@ class Installer(unittest.TestCase):
         config, password, disk = installer.supplied_fields(entries, json.loads)
         self.assertEqual(config['username'], 'alice')
         self.assertEqual(password, 'synthetic-account-only')
-        for invalid in ('short', 'secret\ninjected-command', None, ['not-a-password']):
+        for accepted in ('1234', 'user', 'abcd'):
+            entries['credentials/arch-install.json'] = json.dumps({'password': accepted, 'disk_passphrase': disk})
+            self.assertEqual(installer.supplied_fields(entries, json.loads)[1], accepted)
+        for invalid in ('123', 'secret\ninjected-command', None, ['not-a-password']):
             entries['credentials/arch-install.json'] = json.dumps({'password': invalid, 'disk_passphrase': disk})
             with self.assertRaises(installer.Error):
                 installer.supplied_fields(entries, json.loads)
+        entries['credentials/arch-install.json'] = json.dumps({'password': '1234', 'disk_passphrase': '1234'})
+        with self.assertRaises(installer.Error):
+            installer.supplied_fields(entries, json.loads)
 
     def test_profile_is_portable_and_rejects_injection(self):
         original = {'username': 'alice', 'hostname': 'workstation', 'timezone': 'Asia/Jakarta'}

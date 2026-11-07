@@ -203,7 +203,7 @@ public final class MainActivity extends Activity {
         setup.setOnClickListener(view -> authenticate("Set up Frankenstein", "Confirm ownership before creating a vault", 3));
         layout.addView(setup);
         Button backup = new Button(this);
-        backup.setText("Export encrypted recovery backup");
+        backup.setText("Export encrypted backup");
         backup.setFilterTouchesWhenObscured(true);
         backup.setOnClickListener(view -> authenticate("Export recovery backup", "Confirm ownership", 4));
         layout.addView(backup);
@@ -225,6 +225,7 @@ public final class MainActivity extends Activity {
         else startActivityForResult(unlock, request);
     }
     private void enroll(org.json.JSONObject request) {
+        boolean recoveryEnabled = !request.optString("recovery_passphrase").isEmpty();
         enrollment = null;
         while (layout.getChildCount() > 1) layout.removeViewAt(1);
         status.setText("Creating and verifying your encrypted vault…");
@@ -239,7 +240,9 @@ public final class MainActivity extends Activity {
             boolean accepted = success;
             runOnUiThread(() -> {
                 if (destroyed || revision != selectedRevision) return;
-                status.setText(accepted ? "Vault created. Export its encrypted backup now and keep your recovery passphrase separately. GitHub backup still needs setup." :
+                status.setText(accepted ? (recoveryEnabled ?
+                    "Vault created. Export its encrypted backup and keep your recovery passphrase separately. GitHub backup still needs setup." :
+                    "Vault created without a recovery passphrase. Encrypted backups require an existing device key or paired copy. GitHub backup can now be configured.") :
                     "Setup failed or another vault became active. Existing state was preserved.");
                 addVaultButton();
             });
@@ -256,7 +259,7 @@ public final class MainActivity extends Activity {
             } catch (Exception error) { /* Partial provider output must not be announced as a backup. */ }
             boolean complete = success;
             runOnUiThread(() -> {
-                if (!destroyed) status.setText(complete ? "Encrypted backup exported. Keep it outside this phone, with the recovery passphrase stored separately." :
+                if (!destroyed) status.setText(complete ? "Encrypted backup exported. Keep it outside this phone. Recovery requires your optional passphrase or an existing device key, depending on your setup." :
                     "Export failed. The selected file may be incomplete; export again. Your local vault is unchanged.");
             });
         }, "frankenstein-backup-export").start();

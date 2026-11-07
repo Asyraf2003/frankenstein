@@ -50,8 +50,8 @@ func enroll(source io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, invalid
 	}
-	phrase := text(input["recovery_passphrase"])
-	if utf8.RuneCountInString(phrase) < 20 || len(phrase) > 4096 || strings.ContainsAny(phrase, "\x00\r\n") {
+	phrase, phraseOK := input["recovery_passphrase"].(string)
+	if !phraseOK || (phrase != "" && utf8.RuneCountInString(phrase) < 20) || len(phrase) > 4096 || strings.ContainsAny(phrase, "\x00\r\n") {
 		return nil, invalid
 	}
 	files, ok := input["files"].(map[string]any)
@@ -95,28 +95,38 @@ func enroll(source io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	emergency, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, err
-	}
-	password, err := age.NewScryptRecipient(phrase)
-	if err != nil {
-		return nil, err
-	}
-	// Keep age's standard scrypt work factor; never invent a password KDF.
-	wrapped, err := encrypt([]byte(emergency.String()+"\n"), password)
-	if err != nil {
-		return nil, err
-	}
-	recipient := []byte(emergency.Recipient().String() + "\n")
-	capsuleManifest, err := json.Marshal(map[string]any{"schema": 1, "purpose": "outer-kit-opening-v1",
-		"recipient": emergency.Recipient().String(), "identity_sha256": sha(wrapped), "recipient_sha256": sha(recipient)})
-	if err != nil {
-		return nil, err
-	}
-	capsule := map[string]string{}
-	for name, content := range map[string][]byte{"identity.age": wrapped, "recipient.txt": recipient, "manifest.json": capsuleManifest} {
-		capsule[name] = base64.StdEncoding.EncodeToString(content)
+	recipients := []age.Recipient{local.Recipient()}
+	var capsule any
+	var capsuleDigest any
+	schema := 2 // Explicit device-key-only mode, never an invented recovery secret.
+	if phrase != "" {
+		emergency, err := age.GenerateX25519Identity()
+		if err != nil {
+			return nil, err
+		}
+		password, err := age.NewScryptRecipient(phrase)
+		if err != nil {
+			return nil, err
+		}
+		// Keep age's standard scrypt work factor; never invent a password KDF.
+		wrapped, err := encrypt([]byte(emergency.String()+"\n"), password)
+		if err != nil {
+			return nil, err
+		}
+		recipient := []byte(emergency.Recipient().String() + "\n")
+		capsuleManifest, err := json.Marshal(map[string]any{"schema": 1, "purpose": "outer-kit-opening-v1",
+			"recipient": emergency.Recipient().String(), "identity_sha256": sha(wrapped), "recipient_sha256": sha(recipient)})
+		if err != nil {
+			return nil, err
+		}
+		entries := map[string]string{}
+		for name, content := range map[string][]byte{"identity.age": wrapped, "recipient.txt": recipient, "manifest.json": capsuleManifest} {
+			entries[name] = base64.StdEncoding.EncodeToString(content)
+		}
+		capsule = entries
+		capsuleDigest = sha(capsuleManifest)
+		schema = 1
+		recipients = append(recipients, emergency.Recipient())
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -147,12 +157,12 @@ func enroll(source io.Reader) ([]byte, error) {
 	if err := tarWriter.Close(); err != nil {
 		return nil, err
 	}
-	encrypted, err := encrypt(archive.Bytes(), local.Recipient(), emergency.Recipient())
+	encrypted, err := encrypt(archive.Bytes(), recipients...)
 	if err != nil {
 		return nil, err
 	}
-	header, err := json.Marshal(map[string]any{"schema": 1, "identity": local.String() + "\n", "context": ctx,
-		"archive_sha256": sha(encrypted), "recovery_manifest_sha256": sha(capsuleManifest), "recovery": capsule})
+	header, err := json.Marshal(map[string]any{"schema": schema, "identity": local.String() + "\n", "context": ctx,
+		"archive_sha256": sha(encrypted), "recovery_manifest_sha256": capsuleDigest, "recovery": capsule})
 	if err != nil || len(header) > 65536 {
 		return nil, invalid
 	}

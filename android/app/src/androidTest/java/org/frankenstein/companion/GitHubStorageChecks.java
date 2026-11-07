@@ -9,6 +9,9 @@ import org.json.JSONObject;
 /** Physical Keystore/native integration using isolated synthetic credentials. */
 final class GitHubStorageChecks {
     static void run(Context context, BlobStore store, NativeVault vault) throws Exception {
+        run(context, store, vault, "github-amended-fixture.zip");
+    }
+    static void run(Context context, BlobStore store, NativeVault vault, String filename) throws Exception {
         GitHubSession session=new GitHubSession(context);
         String identity=session.currentKit();
         GitHubClient client=new GitHubClient((method,url,token,body,form)->{
@@ -43,7 +46,7 @@ final class GitHubStorageChecks {
             String publicBytes=new String(bytes,StandardCharsets.ISO_8859_1);
             if(publicBytes.contains("synthetic_replayed") || publicBytes.contains("AGE-SECRET-KEY-"))throw new AssertionError("Plaintext escaped backup");
         }
-        File exported=new File(context.getExternalFilesDir(null),"github-amended-fixture.zip");
+        File exported=new File(context.getExternalFilesDir(null),filename);
         try(OutputStream output=new FileOutputStream(exported)){GitHubBackup.recoveryZip(files,output);}
     }
     private static void journal(Context context,BlobStore store,JSONObject value) throws Exception {

@@ -50,7 +50,7 @@ public class GitHubBackupTest {
                     if(parts.length==5)recovery.put(entry(parts[4],"blob",entry.getString("sha")));
                     else backup.put(entry(parts[3],"blob",entry.getString("sha")));
                 }
-                backup.put(entry("recovery","tree",saveTree(recovery)));
+                if(recovery.length()>0)backup.put(entry("recovery","tree",saveTree(recovery)));
                 String generations=saveTree(new JSONArray().put(entry(digest,"tree",saveTree(backup))));
                 String frankenstein=saveTree(new JSONArray().put(entry("backups","tree",generations)));
                 uploadedTree=saveTree(new JSONArray().put(entry("frankenstein","tree",frankenstein)));
@@ -100,5 +100,24 @@ public class GitHubBackupTest {
     @Test public void extraPlaintextAndOversizedBackupAreRejected() throws Exception {
         Map<String,byte[]> extra=fixture();extra.put("identity.txt",bytes("private"));assertThrows(GitHubClient.Failure.class,()->GitHubBackup.validate(extra));
         Map<String,byte[]> oversized=fixture();oversized.put("vault.age",new byte[GitHubBackup.MAX_BACKUP]);assertThrows(GitHubClient.Failure.class,()->GitHubBackup.validate(oversized));
+    }
+    @Test public void noPassphraseBackupPublishesOnlyCiphertextAndExplicitDeviceKeyMetadata() throws Exception {
+        Map<String,byte[]> files=fixture();
+        files.keySet().retainAll(GitHubBackup.DEVICE_FILES);
+        JSONObject metadata=new JSONObject(new String(files.get("backup.json"),StandardCharsets.UTF_8));
+        metadata.put("schema",2).put("recovery_manifest_sha256",JSONObject.NULL);
+        files.put("backup.json",bytes(metadata.toString()));
+        Remote remote=new Remote();GitHubBackup adapter=remote.adapter();GitHubBackup.Selection selected=adapter.select("state","");
+        String digest=adapter.publish(selected,files);assertTrue(remote.published);assertEquals(2,remote.blobs.size());
+        Map<String,byte[]> downloaded=adapter.download(new GitHubBackup.Selection(selected.repository,"main",remote.commit,remote.uploadedTree),digest);
+        assertEquals(GitHubBackup.DEVICE_FILES,downloaded.keySet());
+        java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream();GitHubBackup.recoveryZip(downloaded,output);
+        Set<String> names=new HashSet<>();
+        try(java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(output.toByteArray()))) {
+            java.util.zip.ZipEntry entry;while((entry=zip.getNextEntry())!=null)names.add(entry.getName());
+        }
+        assertEquals(new HashSet<>(Arrays.asList("vault.age","context.json","selection.json")),names);
+        metadata.put("schema",1);files.put("backup.json",bytes(metadata.toString()));
+        assertThrows(GitHubClient.Failure.class,()->GitHubBackup.validate(files));
     }
 }

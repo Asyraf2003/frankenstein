@@ -21,6 +21,7 @@ import time
 import pexpect
 
 SECRET = 'frankensteintestonly'
+ACCOUNT_SECRET = '1234'
 
 
 class VM:
@@ -115,7 +116,7 @@ def main():
         fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fixture)
         bundle = state / 'synthetic-install.fpe'
-        selected = fixture.create(bundle, SECRET)
+        selected = fixture.create(bundle, SECRET, recovery=False, account_password=ACCOUNT_SECRET)
         encoded = base64.b64encode(bundle.read_bytes()).decode()
         vm.command('umask 077; : > /root/provision.b64')
         # Keep each serial terminal line below the canonical input limit.
@@ -149,7 +150,7 @@ def main():
         vm.child.expect(r'login:', timeout=300)
         vm.child.sendline('proof')
         vm.child.expect_exact('Password:')
-        vm.child.sendline(SECRET)
+        vm.child.sendline(ACCOUNT_SECRET)
         vm.child.expect(r'\$ ')
         vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
         vm.command('test -r /etc/passwd && test -r /etc/profile && test -x /var/lib && id -un | grep -qx proof')
@@ -158,7 +159,7 @@ def main():
         vm.command('frankenstein vault inspect --candidate ~/.local/state/frankenstein/ecosystem/vault.age --identity ~/.local/state/frankenstein/ecosystem/identity.txt --context ~/.local/state/frankenstein/ecosystem/context.json')
         vm.keys('proof')
         time.sleep(2)
-        vm.keys(SECRET)
+        vm.keys(ACCOUNT_SECRET)
         time.sleep(3)
         vm.keys('startx')
         # A real seat/VT Xorg session, not Xvfb and not a simulated display.
@@ -170,7 +171,7 @@ def main():
         # Split the marker in the shell command so command echo cannot match it.
         vm.child.sendline("sudo -k -p 'RECOVERY_''SUDO:' sh -ec \"sed -i 's/^default .*/default frankenstein-lts.conf/' /boot/loader/loader.conf; grep -qx 'default frankenstein-lts.conf' /boot/loader/loader.conf; sync; systemctl poweroff\"")
         vm.child.expect_exact('RECOVERY_SUDO:')
-        vm.child.sendline(SECRET)
+        vm.child.sendline(ACCOUNT_SECRET)
         vm.child.expect(pexpect.EOF, timeout=120)
         vm.stop()
         vm.start()
@@ -179,7 +180,7 @@ def main():
         vm.child.expect(r'login:', timeout=300)
         vm.child.sendline('proof')
         vm.child.expect_exact('Password:')
-        vm.child.sendline(SECRET)
+        vm.child.sendline(ACCOUNT_SECRET)
         vm.child.expect(r'\$ ')
         vm.command("uname -r | grep -E -- '-lts$'")
         vm.command('systemctl is-active frankenstein-first-boot.service && frankenstein profile verify')
@@ -190,6 +191,7 @@ def main():
             'installed boot without ISO', 'PAM login', 'first-boot verification', 'TTY startx', 'Welcome',
             'LTS recovery boot', 'LTS LUKS unlock and PAM login', 'LTS first-boot verification'],
             'provisioning': ['synthetic encrypted bundle supplies account and disk credentials',
+                             'four-character numeric login/sudo password', 'optional recovery skipped; surviving device key opens vault',
                              'private tuning retained', 'portable vault independently opens after boot'],
             'not_verified': ['physical hardware', 'USB pairing inside VM', 'generation rollback']}, indent=2) + '\n')
         print('CLEAN_DISK_VM_PROOF=PASS')

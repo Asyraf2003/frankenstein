@@ -26,6 +26,7 @@ import portable
 import recovery_kit as kit
 import recovery_opening as opening
 import recovery_backup
+import backup as private_backup
 sys.path.insert(0, str(ROOT / 'lib'))
 import provision
 spec = importlib.util.spec_from_file_location('native_opening', ROOT / 'tests/native-vault-opening.py')
@@ -204,6 +205,70 @@ class Portable(unittest.TestCase):
         self.assertEqual(list(destination.iterdir()), [])
         self.assertFalse((self.case / 'escaped').exists())
 
+    def test_optional_recovery_enrollment_replication_and_backup_require_surviving_key(self):
+        request = {'context': self.context, 'files': {'desired/profile.json': base64.b64encode(self.plain).decode()},
+                   'recovery_passphrase': ''}
+        result = subprocess.run([str(BRIDGE), 'enroll'], input=kit.encoded(request), capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, 'Device-key enrollment failed; private output withheld')
+        original_header = json.loads(result.stdout[8:8 + struct.unpack('>I', result.stdout[4:8])[0]])
+        self.assertEqual(original_header['schema'], 2)
+        self.assertIsNone(original_header['recovery'])
+        self.assertIsNone(original_header['recovery_manifest_sha256'])
+        amendment = kit.encoded({'path': 'credentials/github.json', 'base64': base64.b64encode(b'{"fixture":"device-key-only"}').decode()})
+        amended = subprocess.run([str(BRIDGE), 'amend-github'],
+            input=struct.pack('>I', len(amendment)) + amendment + result.stdout, capture_output=True, timeout=30)
+        self.assertEqual(amended.returncode, 0, 'Device-key amendment failed; private output withheld')
+        bundle = self.case / 'device-only.fpe'
+        bundle.write_bytes(amended.stdout)
+        paired = self.case / 'paired'
+        portable.restore(bundle, paired, kit.sha(bundle))
+        self.assertFalse((paired / 'recovery').exists())
+        self.assertTrue((paired / 'identity.txt').read_text() == original_header['identity'])
+        replicated = self.case / 'device-replicated.fpe'
+        portable.create(paired / 'state', paired / 'identity.txt', self.context, None, None, replicated)
+        self.assertEqual(self.native(replicated).returncode, 0)
+        archive_digest = kit.sha(paired / 'vault.age')
+        exported = self.case / 'device-only.zip'
+        with zipfile.ZipFile(exported, 'w') as archive:
+            archive.write(paired / 'vault.age', 'vault.age')
+            archive.write(paired / 'context.json', 'context.json')
+            archive.writestr('selection.json', kit.encoded({'schema': 2, 'archive_sha256': archive_digest,
+                'recovery_manifest_sha256': None}))
+        missing = self.case / 'missing-key'
+        with self.assertRaisesRegex(kit.KitError, 'REQUIRES_EXISTING_DEVICE_IDENTITY'):
+            recovery_backup.restore(exported, missing, kit.sha(exported))
+        self.assertFalse(missing.exists())
+        restored = self.case / 'device-restored'
+        recovery_backup.restore(exported, restored, kit.sha(exported), paired / 'identity.txt')
+        self.assertEqual((restored / 'state/desired/profile.json').read_bytes(), self.plain)
+        self.assertEqual((restored / 'state/credentials/github.json').read_bytes(), b'{"fixture":"device-key-only"}')
+        wrong = self.case / 'wrong-key'
+        with self.assertRaises((ValueError, OSError)):
+            recovery_backup.restore(exported, wrong, kit.sha(exported), self.key)
+        self.assertFalse(wrong.exists())
+        # Same schema works through the existing sparse private-Git restore adapter.
+        def checkout(url, branch, output):
+            directory = output / 'frankenstein/backups' / archive_digest
+            directory.mkdir(parents=True)
+            shutil.copyfile(paired / 'vault.age', directory / 'vault.age')
+            (directory / 'backup.json').write_bytes(kit.encoded({'schema': 2, 'ciphertext_sha256': archive_digest,
+                'context': self.context, 'recovery_manifest_sha256': None}))
+        with patch.object(private_backup, 'repository', return_value=('https://github.com/fixture/state.git', 'main')), \
+             patch.object(private_backup, 'checkout_backup', side_effect=checkout):
+            cloud = self.case / 'cloud-restored'
+            private_backup.restore('fixture/state', archive_digest, cloud, identity=paired / 'identity.txt')
+            self.assertEqual((cloud / 'desired/profile.json').read_bytes(), self.plain)
+            with self.assertRaisesRegex(kit.KitError, 'REQUIRES_EXISTING_DEVICE_IDENTITY'):
+                private_backup.restore('fixture/state', archive_digest, self.case / 'cloud-missing-key')
+        # Mixed schemas cannot masquerade as an independent recovery backup.
+        for schema, recovery, digest in [(1, None, None), (2, {}, None), (2, None, '0' * 64)]:
+            header = dict(original_header, schema=schema, recovery=recovery, recovery_manifest_sha256=digest)
+            encoded = kit.encoded(header)
+            size = struct.unpack('>I', result.stdout[4:8])[0]
+            malformed = b'FPE1' + struct.pack('>I', len(encoded)) + encoded + result.stdout[8+size:]
+            bad = subprocess.run([str(BRIDGE), 'verify'], input=malformed, capture_output=True)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertEqual(bad.stdout, b'')
     def test_fresh_device_can_replicate_without_original_identity(self):
         self.key.unlink()
         shutil.rmtree(self.staging)
@@ -238,17 +303,18 @@ class Portable(unittest.TestCase):
         fixture = module('install_fixture', ROOT / 'tests/provisioning-fixture.py')
         installer = module('native_installer', ROOT / 'installer/install.py')
         bundle = self.case / 'installation.fpe'
-        digest = fixture.create(bundle, 'synthetic-account-disk-only')
+        digest = fixture.create(bundle, 'synthetic-account-disk-only', recovery=False, account_password='1234')
         args = SimpleNamespace(phone=None, provisioning_bundle=bundle, sha256=digest)
         staging = self.case / 'bootstrap'
         staging.mkdir()
         config, password, disk, supplied = installer.provision_input(args, staging)
         self.assertEqual(config['username'], 'proof')
-        self.assertEqual(password, 'synthetic-account-disk-only')
-        self.assertEqual(password, disk)
+        self.assertEqual(password, '1234')
+        self.assertEqual(disk, 'synthetic-account-disk-only')
         supplied['recheck']()
         restored = self.case / 'encrypted-root-fixture'
         supplied['restore'](restored)
+        self.assertFalse((restored / 'recovery').exists())
         self.assertEqual((restored / 'state/desired/tuning.json').read_bytes(),
                          b'{"fixture":"portable-tuning-preserved"}\n')
         context = kit.decode((restored / 'context.json').read_bytes())

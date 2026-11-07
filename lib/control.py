@@ -23,7 +23,7 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   engine stage vMAJOR.MINOR.PATCH NEW_DIRECTORY
   vault create|inspect|promote|restore [ARGS] (use vault --help for explicit input paths)
   recovery-key enroll|verify|recipient [ARGS] (native age passphrase prompt)
-  recover-backup --source ENCRYPTED_ZIP --output NEW_PRIVATE_DIRECTORY --sha256 DIGEST
+  recover-backup --source ENCRYPTED_ZIP --output NEW_PRIVATE_DIRECTORY --sha256 DIGEST [--identity DEVICE_KEY]
   vault-backup --repository OWNER/PRIVATE_REPO capture|publish|restore [ARGS]
   usb --serial DEVICE --state PRIVATE_DIRECTORY pair|push|pull|receive|current|activate [ARGS]
   portable create|restore [ARGS] (private provisioning bundle; never store in Git)

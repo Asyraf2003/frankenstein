@@ -255,14 +255,14 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
             run('cryptsetup', 'close', MAPPER)
 
 
-def valid_secret(value):
-    if not isinstance(value, str) or not 12 <= len(value) <= 4096 or any(c in value for c in '\n\r\x00'):
-        raise Error('secret must have at least 12 characters and no control separators')
+def valid_secret(value, minimum=12):
+    if not isinstance(value, str) or not minimum <= len(value) <= 4096 or any(c in value for c in '\n\r\x00'):
+        raise Error(f'secret must have at least {minimum} characters and no control separators')
     return value
 
 
-def read_secret(prompt):
-    first = valid_secret(getpass.getpass(prompt))
+def read_secret(prompt, minimum=12):
+    first = valid_secret(getpass.getpass(prompt), minimum)
     if first != getpass.getpass('Repeat: '):
         raise Error('secrets do not match')
     return first
@@ -273,7 +273,7 @@ def supplied_fields(entries, decode):
     secrets = decode(entries['credentials/arch-install.json'])
     if not isinstance(secrets, dict) or set(secrets) != {'password', 'disk_passphrase'}:
         raise Error('installation credentials require password and disk_passphrase')
-    return config, valid_secret(secrets['password']), valid_secret(secrets['disk_passphrase'])
+    return config, valid_secret(secrets['password'], 4), valid_secret(secrets['disk_passphrase'])
 
 
 def provision_input(args, temporary):
@@ -364,11 +364,11 @@ def execute(args, node, temporary):
     run('pacman', '-Sy', '--noconfirm')
     run('pacman', '-Si', *BASE, *config['packages'], capture=True)
     if not supplied:
-        password = read_secret('New account password: ')
+        password = read_secret('New account password (4+ characters): ', 4)
         print('Keep this disk recovery passphrase outside the encrypted system. It is not a vault recovery key.')
         luks_secret = read_secret('Disk recovery passphrase: ')
     else:
-        print('Provisioned account and disk unlock material verified. Preserve your independent vault recovery backup.')
+        print('Provisioned account and disk unlock material verified. Keep a paired device key or configured recovery backup.')
     print('Install user ' + config['username'] + ' on host ' + config['hostname'] + '.')
     print('ALL DATA ON THE SELECTED DISK WILL BE ERASED. Type: ' + approval(node))
     if input('Approval: ') != approval(node):

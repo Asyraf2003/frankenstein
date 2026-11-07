@@ -14,23 +14,34 @@ final class Enrollment {
     private boolean active = true;
     Enrollment(Activity activity, LinearLayout layout, TextView status,
                java.util.function.Consumer<JSONObject> submit) {
-        status.setText("Create your ecosystem\n\nChoose your Arch account and an independent recovery passphrase. " +
-            "Write the recovery passphrase outside your phone and PC. You must also export the encrypted backup; " +
-            "the passphrase alone cannot recover lost data. GitHub backup is not configured by this form yet.");
+        status.setText("Create your ecosystem\n\nChoose your Arch login/sudo account. Recovery passphrase is optional. " +
+            "Without it, encrypted backups require an existing device key or paired copy; losing all keys makes them unrecoverable. " +
+            "GitHub backup can be configured after setup.");
         EditText username = field(activity, layout, "Arch username (lowercase)", false);
         EditText hostname = field(activity, layout, "PC hostname", false);
         EditText zone = field(activity, layout, "Timezone", false);
         zone.setText(TimeZone.getDefault().getID());
         EditText email = field(activity, layout, "Google email (optional)", false);
-        EditText password = field(activity, layout, "Arch account password (12+ characters)", true);
+        EditText password = field(activity, layout, "Arch login/sudo password (4+ characters)", true);
         EditText repeatPassword = field(activity, layout, "Repeat account password", true);
         EditText diskPassword = field(activity, layout, "Disk unlock passphrase (12+ characters)", true);
         EditText repeatDisk = field(activity, layout, "Repeat disk unlock passphrase", true);
-        EditText phrase = field(activity, layout, "Recovery passphrase (20+ characters)", true);
-        EditText repeatPhrase = field(activity, layout, "Repeat recovery passphrase", true);
+        CheckBox recoveryEnabled = new CheckBox(activity);
+        recoveryEnabled.setText("Add an optional recovery passphrase");
+        layout.addView(recoveryEnabled);
+        LinearLayout recoveryFields = new LinearLayout(activity);
+        recoveryFields.setOrientation(LinearLayout.VERTICAL);
+        layout.addView(recoveryFields);
+        EditText phrase = field(activity, recoveryFields, "Recovery passphrase (20+ characters, optional)", true);
+        EditText repeatPhrase = field(activity, recoveryFields, "Repeat recovery passphrase", true);
         CheckBox saved = new CheckBox(activity);
         saved.setText("I recorded my recovery passphrase outside these devices and will export the encrypted backup.");
-        layout.addView(saved);
+        recoveryFields.addView(saved);
+        recoveryFields.setVisibility(View.GONE);
+        recoveryEnabled.setOnCheckedChangeListener((button, checked) -> {
+            recoveryFields.setVisibility(checked ? View.VISIBLE : View.GONE);
+            if (!checked) { phrase.setText(""); repeatPhrase.setText(""); saved.setChecked(false); }
+        });
         TextView validation = new TextView(activity);
         validation.setTextColor(android.graphics.Color.rgb(150, 20, 20));
         validation.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -52,7 +63,7 @@ final class Enrollment {
                     values.put(input.getKey(), input.getValue().getText().toString());
                 }
                 saved.setError(null);
-                Map<String,String> errors = EnrollmentValidation.errors(values, saved.isChecked());
+                Map<String,String> errors = EnrollmentValidation.errors(values, saved.isChecked(), recoveryEnabled.isChecked());
                 values.clear();
                 if (!errors.isEmpty()) {
                     validation.setText("Vault was not created. Fix these fields:\n\n" + String.join("\n", errors.values()));

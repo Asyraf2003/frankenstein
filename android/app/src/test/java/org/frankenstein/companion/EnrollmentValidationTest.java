@@ -39,9 +39,17 @@ public class EnrollmentValidationTest {
         assertEquals(new HashSet<>(Arrays.asList("username","hostname","timezone")),EnrollmentValidation.errors(values,true).keySet());
     }
     @Test public void passwordCharacterCountUsesCodePointsAndRejectsControlCharacters() {
-        Map<String,String> values=valid();values.put("password","😀".repeat(6));values.put("repeat_password",values.get("password"));
+        Map<String,String> values=valid();values.put("password","😀".repeat(3));values.put("repeat_password",values.get("password"));
         assertEquals(Collections.singleton("password"),EnrollmentValidation.errors(values,true).keySet());
         values.put("password","safe-looking\npassword");values.put("repeat_password",values.get("password"));
         assertEquals(Collections.singleton("password"),EnrollmentValidation.errors(values,true).keySet());
+    }
+    @Test public void fourCharacterAccountAcceptsNumbersOrLettersAndRecoveryCanBeSkipped() {
+        for(String password:Arrays.asList("1234","user")) {
+            Map<String,String> values=valid();values.put("password",password);values.put("repeat_password",password);
+            values.put("recovery","");values.put("repeat_recovery","");
+            assertTrue(EnrollmentValidation.errors(values,false).isEmpty());
+            assertEquals(new HashSet<>(Arrays.asList("recovery","saved")),EnrollmentValidation.errors(values,false,true).keySet());
+        }
     }
 }

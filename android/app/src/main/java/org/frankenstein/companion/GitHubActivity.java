@@ -70,7 +70,7 @@ public final class GitHubActivity extends Activity {
     private void home() {
         screen("GitHub private backup");
         TextView disclosure = new TextView(this);
-        disclosure.setText("Only encrypted vault data and recovery metadata are uploaded. Keep your recovery passphrase outside this phone. Cloud limit: 8 MiB.\n\nGitHub's repo permission covers public and private repositories; Frankenstein writes only the private repository and branch you select.");
+        disclosure.setText("Only encrypted vault data and public metadata are uploaded. Recovery passphrase is optional; without one, keep an existing device key or paired copy. Cloud limit: 8 MiB.\n\nGitHub's repo permission covers public and private repositories; Frankenstein writes only the private repository and branch you select.");
         layout.addView(disclosure);
         button("Sign in / authorize this device",()->{
             if (busy) return;
@@ -163,7 +163,7 @@ public final class GitHubActivity extends Activity {
             }
             return value;
         },id->status.setText("GitHub recovery ZIP downloaded and hashes verified.\nDigest: "+id+
-            "\nUse recover-backup with your separate recovery passphrase to verify independent restoration. This download does not replace the phone's vault."));
+            "\nUse recover-backup with your optional recovery passphrase or an existing device identity (--identity). This download does not replace the phone's vault."));
     }
     private <T> void run(Action<T> action,Done<T> done) {
         if (busy || !foreground) return;

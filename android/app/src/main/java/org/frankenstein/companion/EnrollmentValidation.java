@@ -5,6 +5,9 @@ import java.util.*;
 /** Field-specific validation. Errors never contain submitted secret values. */
 final class EnrollmentValidation {
     static Map<String,String> errors(Map<String,String> values, boolean saved) {
+        return errors(values, saved, !values.get("recovery").isEmpty() || !values.get("repeat_recovery").isEmpty());
+    }
+    static Map<String,String> errors(Map<String,String> values, boolean saved, boolean recoveryEnabled) {
         Map<String,String> errors = new LinkedHashMap<>();
         String user = values.get("username"), host = values.get("hostname"), zone = values.get("timezone");
         String account = values.get("password"), disk = values.get("disk"), recovery = values.get("recovery");
@@ -14,15 +17,17 @@ final class EnrollmentValidation {
             errors.put("hostname", "Use 1–63 lowercase letters, numbers or -. Start and end with a letter or number.");
         if (!Arrays.asList(TimeZone.getAvailableIDs()).contains(zone))
             errors.put("timezone", "Choose a valid timezone, for example Asia/Jakarta or UTC.");
-        if (!secret(account,12)) errors.put("password", "Account password needs at least 12 characters, with no line breaks.");
+        if (!secret(account,4)) errors.put("password", "Account password needs at least 4 characters. Numbers or letters alone are allowed.");
         if (!account.equals(values.get("repeat_password"))) errors.put("repeat_password", "Repeat the account password exactly.");
         if (!secret(disk,12)) errors.put("disk", "Disk passphrase needs at least 12 characters, with no line breaks.");
         if (!disk.equals(values.get("repeat_disk"))) errors.put("repeat_disk", "Repeat the disk passphrase exactly.");
-        if (!secret(recovery,20)) errors.put("recovery", "Recovery passphrase needs at least 20 characters, with no line breaks.");
+        if (recoveryEnabled) {
+        if (!secret(recovery,20)) errors.put("recovery", "Optional recovery passphrase needs at least 20 characters, or turn off recovery to skip it.");
         else if (recovery.equals(account) || recovery.equals(disk))
             errors.put("recovery", "Use a recovery passphrase different from both account and disk passwords.");
         if (!recovery.equals(values.get("repeat_recovery"))) errors.put("repeat_recovery", "Repeat the recovery passphrase exactly.");
         if (!saved) errors.put("saved", "Record the recovery passphrase separately, then tick the confirmation box.");
+        }
         return errors;
     }
     private static boolean secret(String value, int minimum) {

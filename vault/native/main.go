@@ -153,6 +153,12 @@ func context(value any) (map[string]any, error) {
 }
 
 func recovery(header map[string]any) error {
+	if header["schema"] == json.Number("2") {
+		if header["recovery"] == nil && header["recovery_manifest_sha256"] == nil {
+			return nil
+		}
+		return invalid
+	}
 	entries, ok := header["recovery"].(map[string]any)
 	if !ok || !keys(entries, "identity.age", "recipient.txt", "manifest.json") {
 		return invalid
@@ -210,7 +216,7 @@ func verify(source io.Reader, selected string) ([]byte, error) {
 		return nil, invalid
 	}
 	header, err := object(data)
-	if err != nil || !keys(header, "schema", "identity", "context", "archive_sha256", "recovery_manifest_sha256", "recovery") || header["schema"] != json.Number("1") {
+	if err != nil || !keys(header, "schema", "identity", "context", "archive_sha256", "recovery_manifest_sha256", "recovery") || (header["schema"] != json.Number("1") && header["schema"] != json.Number("2")) {
 		return nil, invalid
 	}
 	expected, err := context(header["context"])
