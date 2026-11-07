@@ -39,7 +39,9 @@ class DriveSync(unittest.TestCase):
             self.assertEqual(args[args.index('--conflict-resolve') + 1], 'none')
 
     def test_phone_account_mismatch_never_imports_credentials(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        # This checks account identity, independently of the shared Git-boundary
+        # guard (minimal package-build environments need not have git installed).
+        with tempfile.TemporaryDirectory() as tmp, patch.object(drive.kit, 'outside_git', side_effect=lambda p: Path(p).absolute()):
             root = Path(tmp)
             (root / 'state/desired').mkdir(parents=True)
             (root / 'state/credentials').mkdir()
