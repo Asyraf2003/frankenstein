@@ -195,13 +195,14 @@ def inventory(staging):
     return entries
 
 
-def build(staging, ctx, archive):
+def build(staging, ctx, archive, *, kit_id=None):
     staging = safe(staging)
     require(staging.is_dir(), 'STAGING_MISSING')
     # Only named owner staging trees; never recursively back up an arbitrary home.
     before = inventory(staging)
     files = {}
-    value = {'schema': 1, 'kit_id': uuid.uuid4().hex,
+    require(kit_id is None or isinstance(kit_id, str) and re.fullmatch('[0-9a-f]{32}', kit_id), 'KIT_ID_INVALID')
+    value = {'schema': 1, 'kit_id': kit_id or uuid.uuid4().hex,
              'created_at': datetime.now(timezone.utc).isoformat(),
              'context': context(ctx), 'files': files}
     archive.touch(mode=0o600, exist_ok=False)
@@ -230,7 +231,7 @@ def build(staging, ctx, archive):
     return value
 
 
-def create(staging, ctx, recipients, candidate):
+def create(staging, ctx, recipients, candidate, *, kit_id=None):
     require(bool(recipients) and all(isinstance(v, str) and v for v in recipients), 'RECIPIENTS_MISSING')
     candidate = safe(candidate)
     require(not candidate.exists(), 'CANDIDATE_EXISTS')
@@ -239,7 +240,7 @@ def create(staging, ctx, recipients, candidate):
     candidate.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='.kit-create-', dir=candidate.parent) as folder:
         folder = Path(folder)
-        value = build(staging, ctx, folder / 'payload.tar')
+        value = build(staging, ctx, folder / 'payload.tar', kit_id=kit_id)
         args = ['age']
         for recipient in recipients:
             args += ['--recipient', recipient]
@@ -257,7 +258,10 @@ def create(staging, ctx, recipients, candidate):
 def inspect(candidate, identity, expected, *, _materialize=None):
     candidate, identity = safe(candidate), safe(identity)
     expected = context(expected)
-    with tempfile.TemporaryDirectory(prefix='.kit-inspect-') as folder:
+    # Restoring a large vault must keep the temporary plaintext tar on the
+    # destination filesystem (e.g. the new encrypted root), not live-ISO tmpfs.
+    with tempfile.TemporaryDirectory(prefix='.kit-inspect-',
+                                     dir=_materialize.parent if _materialize else None) as folder:
         copied = Path(folder) / 'candidate.age'
         require(candidate.is_file(), 'CANDIDATE_MISSING')
         before = stable(candidate.stat())
@@ -317,19 +321,24 @@ def materialize(candidate, identity, expected, destination, expected_archive):
         sync_directory(files)
         # Linux/Android native atomic exclusive rename: a concurrent empty
         # destination must not be overwritten either. Fail closed if unavailable.
-        libc = ctypes.CDLL(None, use_errno=True)
-        rename = getattr(libc, 'renameat2', None)
-        require(rename is not None, 'ATOMIC_RESTORE_UNAVAILABLE')
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                           ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        if rename(-100, os.fsencode(files), -100, os.fsencode(destination), 1):
-            code = ctypes.get_errno()
-            if code == errno.EEXIST:
-                raise KitError('MATERIALIZED_OUTPUT_EXISTS')
-            raise OSError(code, 'atomic restore publication failed')
-        sync_directory(destination.parent)
+        publish_directory(files, destination)
     return proof
+
+
+def publish_directory(source, destination):
+    """Publish a fully verified private directory without replacing any target."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, 'renameat2', None)
+    require(rename is not None, 'ATOMIC_RESTORE_UNAVAILABLE')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                       ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise KitError('MATERIALIZED_OUTPUT_EXISTS')
+        raise OSError(code, 'atomic restore publication failed')
+    sync_directory(destination.parent)
 
 
 def sync_directory(path):

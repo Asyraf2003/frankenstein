@@ -11,7 +11,7 @@ final class PeerServer implements AutoCloseable {
     private final SSLServerSocket listener;
     private volatile SSLSocket current;
     private volatile boolean stopped;
-    PeerServer(X509Certificate peer, BlobStore store, java.util.function.Consumer<String> status) throws Exception {
+    PeerServer(X509Certificate peer, BlobStore store, NativeVault vault, java.util.function.Consumer<String> status) throws Exception {
         listener = (SSLServerSocket) Identity.context(peer).getServerSocketFactory().createServerSocket();
         listener.setReuseAddress(true);
         listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 1);
@@ -49,6 +49,30 @@ final class PeerServer implements AutoCloseable {
                             if (object.read() != -1 || !Identity.hex(digest.digest()).equals(id)) throw new IOException("Corrupt storage");
                             output.writeByte(0);
                         }
+                    } else if (operation == 3) {
+                        output.writeByte(0);
+                        output.write(vault.current().getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    } else if (operation == 4) {
+                        byte[] previous = new byte[32];
+                        input.readFully(previous);
+                        vault.activate(store, id, Identity.hex(previous));
+                        output.writeByte(0);
+                        status.accept("Portable vault verified and ready for a new PC.");
+                    } else if (operation == 5) {
+                        int length = input.readUnsignedShort();
+                        if (length == 0 || length > 512) throw new IOException("Invalid entry name");
+                        byte[] name = new byte[length];
+                        input.readFully(name);
+                        String selected = new String(name, java.nio.charset.StandardCharsets.UTF_8);
+                        if (!java.util.Arrays.equals(name, selected.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                            throw new IOException("Invalid entry encoding");
+                        byte[] entry = android.util.Base64.decode(vault.inspect(store, id, selected)
+                            .getJSONObject("selected").getString("base64"), android.util.Base64.NO_WRAP);
+                        try {
+                            output.writeByte(0);
+                            output.writeInt(entry.length);
+                            output.write(entry);
+                        } finally { java.util.Arrays.fill(entry, (byte)0); }
                     } else throw new IOException("Unknown operation");
                     output.flush();
                     status.accept("Transfer verified. Ready.");

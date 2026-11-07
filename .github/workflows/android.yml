@@ -1,7 +1,7 @@
 name: Android companion
 on:
   pull_request:
-    paths: ['android/**', 'transport/**', 'tests/test_usb.py', '.github/workflows/android.yml']
+    paths: ['android/**', 'transport/**', 'vault/**', 'lib/provision.py', 'lib/device_sync.py', 'installer/install.py', 'tests/test_usb.py', 'tests/native-portable.py', 'tests/native-device-sync.py', 'tests/provisioning-fixture.py', '.github/workflows/android.yml']
   push:
     branches: [main]
 permissions:
@@ -16,6 +16,16 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: vault/native/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y age
+      - run: go -C vault/native build -buildvcs=false -o out/bridge .
+      - run: python3 tests/native-portable.py
+      - run: python3 tests/native-device-sync.py
+      - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358"'
+      - run: bash android/build-native.sh
       - run: bash android/gradlew -p android --no-daemon :app:assembleDebug :app:testDebugUnitTest
       - run: python3 -m unittest discover -s tests -p test_usb.py -v
       - uses: actions/upload-artifact@v4

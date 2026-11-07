@@ -164,6 +164,68 @@ def pull(stream, identifier, destination):
     return identifier
 
 
+def current(stream):
+    stream.sendall(b'FRK1\x03' + bytes(32))
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('phone current vault unavailable')
+    identifier = read_exact(stream, 64).decode('ascii')
+    if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier):
+        raise ValueError('invalid current vault response')
+    return identifier
+
+
+def activate(stream, identifier, previous='0' * 64):
+    if any(len(value) != 64 or any(c not in '0123456789abcdef' for c in value)
+           for value in (identifier, previous)):
+        raise ValueError('invalid vault generation')
+    stream.settimeout(310)  # Match the receiver's bounded native verification watchdog.
+    stream.sendall(b'FRK1\x04' + bytes.fromhex(identifier) + bytes.fromhex(previous))
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('vault verification or generation conflict')
+    return identifier
+
+
+def read_entry(stream, identifier, name):
+    encoded = name.encode('utf-8')
+    if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier) or not 0 < len(encoded) <= 512:
+        raise ValueError('invalid vault entry selection')
+    stream.settimeout(310)
+    stream.sendall(b'FRK1\x05' + bytes.fromhex(identifier) + struct.pack('>H', len(encoded)) + encoded)
+    if read_exact(stream, 1) != b'\0':
+        raise ValueError('vault entry unavailable')
+    length = struct.unpack('>I', read_exact(stream, 4))[0]
+    if length > 1024 * 1024:
+        raise ValueError('vault entry exceeds limit')
+    return read_exact(stream, length)
+
+
+def receive(usb, key, cert, phone, destination, expected=None):
+    """Receive one selected vault generation, rejecting a concurrent switch."""
+    destination = outside_git(destination)
+    if destination.exists():
+        raise FileExistsError(destination)
+    private_directory(destination.parent)
+    port = usb.forward()
+    try:
+        with tempfile.TemporaryDirectory(prefix='.provision-', dir=destination.parent) as temporary:
+            selected = Path(temporary) / 'vault.fpe'
+            with connect(port, key, cert, phone) as stream:
+                identifier = current(stream)
+            if identifier == '0' * 64:
+                raise ValueError('phone has no provisioned vault')
+            if expected is not None and identifier != expected:
+                raise ValueError('phone vault changed since selection; retry')
+            with connect(port, key, cert, phone) as stream:
+                pull(stream, identifier, selected)
+            with connect(port, key, cert, phone) as stream:
+                if current(stream) != identifier:
+                    raise ValueError('phone vault changed during transfer; retry')
+            os.link(selected, destination)
+        return identifier
+    finally:
+        usb.remove(port)
+
+
 class USB:
     def __init__(self, adb, serial, app=APP):
         self.command = [str(adb), '-s', serial]
@@ -188,6 +250,41 @@ class USB:
         self.run('forward', '--remove', 'tcp:' + str(port))
 
 
+def pair(usb, key, cert, state, serial):
+    pin = state / ('phone-' + hashlib.sha256(serial.encode()).hexdigest() + '.der')
+    outside_git(pin)
+    usb.request(cert)
+    phone = usb.phone_certificate()
+    # Parse before creating the pin, and never overwrite an existing identity.
+    ssl.PEM_cert_to_DER_cert(ssl.DER_cert_to_PEM_cert(phone))
+    if pin.exists() and pin.read_bytes() != phone:
+        raise ValueError('phone identity changed; explicit device replacement required')
+    port = usb.forward()
+    try:
+        print('Waiting up to 5 minutes for owner approval on the phone.', flush=True)
+        deadline = time.monotonic() + 300
+        while True:
+            try:
+                with connect(port, key, cert, phone) as stream:
+                    # A zero-byte object is harmless and confirms the server has
+                    # completed client authentication and accepted app traffic.
+                    empty = hashlib.sha256(b'').digest()
+                    stream.sendall(b'FRK1\x01' + empty + struct.pack('>Q', 0))
+                    if read_exact(stream, 1) != b'\0':
+                        raise ValueError('pairing proof rejected')
+                break
+            except (OSError, EOFError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('owner approval not received')
+                time.sleep(2)
+        if not pin.exists():
+            with pin.open('xb') as out:
+                out.write(phone)
+        print('PAIRING=VERIFIED', flush=True)
+    finally:
+        usb.remove(port)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--adb', default='adb')
@@ -197,6 +294,12 @@ def main():
     parser.add_argument('--app', default=APP)
     commands = parser.add_subparsers(dest='action', required=True)
     commands.add_parser('pair')
+    commands.add_parser('current')
+    receive_command = commands.add_parser('receive')
+    receive_command.add_argument('destination', type=Path)
+    select = commands.add_parser('activate')
+    select.add_argument('sha256')
+    select.add_argument('--previous', default='0' * 64)
     put = commands.add_parser('push')
     put.add_argument('source', type=Path)
     get = commands.add_parser('pull')
@@ -208,43 +311,25 @@ def main():
     pin = args.state / ('phone-' + hashlib.sha256(args.serial.encode()).hexdigest() + '.der')
     outside_git(pin)
     if args.action == 'pair':
-        usb.request(cert)
-        phone = usb.phone_certificate()
-        # Parse before creating the pin, and never overwrite an existing identity.
-        ssl.PEM_cert_to_DER_cert(ssl.DER_cert_to_PEM_cert(phone))
-        if pin.exists() and pin.read_bytes() != phone:
-            raise ValueError('phone identity changed; explicit device replacement required')
-        port = usb.forward()
-        try:
-            print('Waiting up to 5 minutes for owner approval on the phone.', flush=True)
-            deadline = time.monotonic() + 300
-            while True:
-                try:
-                    with connect(port, key, cert, phone) as stream:
-                        # A zero-byte object is harmless and confirms the server has
-                        # completed client authentication and accepted app traffic.
-                        empty = hashlib.sha256(b'').digest()
-                        stream.sendall(b'FRK1\x01' + empty + struct.pack('>Q', 0))
-                        if read_exact(stream, 1) != b'\0':
-                            raise ValueError('pairing proof rejected')
-                    break
-                except (OSError, EOFError):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError('owner approval not received')
-                    time.sleep(2)
-            if not pin.exists():
-                with pin.open('xb') as out:
-                    out.write(phone)
-            print('PAIRING=VERIFIED', flush=True)
-        finally:
-            usb.remove(port)
+        pair(usb, key, cert, args.state, args.serial)
         return
     if not pin.exists():
         raise ValueError('pair this phone before transferring state')
+    if args.action == 'receive':
+        selected = receive(usb, key, cert, pin.read_bytes(), args.destination)
+        print('TRANSFER=VERIFIED\nSHA256=' + selected)
+        return
     port = usb.forward()
     try:
         with connect(port, key, cert, pin.read_bytes()) as stream:
-            selected = push(stream, args.source) if args.action == 'push' else pull(stream, args.sha256, args.destination)
+            if args.action == 'push':
+                selected = push(stream, args.source)
+            elif args.action == 'pull':
+                selected = pull(stream, args.sha256, args.destination)
+            elif args.action == 'activate':
+                selected = activate(stream, args.sha256, args.previous)
+            else:
+                selected = current(stream)
         print('TRANSFER=VERIFIED\nSHA256=' + selected)
     finally:
         usb.remove(port)
