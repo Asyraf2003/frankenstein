@@ -21,6 +21,8 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   service status|enable|disable network|bluetooth
   profile list|status|verify|apply NAME [--replace]|rollback|recover
   engine stage vMAJOR.MINOR.PATCH NEW_DIRECTORY
+  update-pc vMAJOR.MINOR.PATCH (verified stable engine packages; retains the previous generation)
+  engine status|rollback|recover --use previous|target (engine packages only)
   vault create|inspect|promote|restore [ARGS] (use vault --help for explicit input paths)
   recovery-key enroll|verify|recipient [ARGS] (native age passphrase prompt)
   recover-backup --source ENCRYPTED_ZIP --output NEW_PRIVATE_DIRECTORY --sha256 DIGEST [--identity DEVICE_KEY]
@@ -38,7 +40,7 @@ Connect prompts for credentials through nmcli; credentials are never arguments.
 Service enable/disable changes boot enablement only; start/stop through systemctl.
 Profiles manage only the current user's files. Apply refuses existing files unless
 --replace is explicitly selected; backups and rollback preserve previous bytes.
-Rollback affects profile files only, never packages, services or user data.
+Profile rollback affects profile files only; engine rollback restores engine packages.
 Desktop profiles are optional. No private repository or recovery input is needed.
 """
 
@@ -182,8 +184,12 @@ def main(args):
         import profiles
         return profiles.main(args[1:])
     if args[0] == 'engine':
+        if len(args) > 1 and args[1] in ('status', 'rollback', 'recover'):
+            return call([sys.executable, '/usr/lib/frankenstein/engine_update.py', *args[1:]], privileged=True).returncode
         import releases
         return releases.main(args[1:])
+    if args[0] == 'update-pc':
+        return call([sys.executable, '/usr/lib/frankenstein/engine_update.py', 'apply', *args[1:]], privileged=True).returncode
     if args[0] == 'vault':
         return call([sys.executable, '/usr/lib/frankenstein/vault/recovery_kit.py', *args[1:]]).returncode
     if args[0] == 'recovery-key':

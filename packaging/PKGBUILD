@@ -33,6 +33,7 @@ package_frankenstein-core() {
     install -Dm644 lib/control.py "$pkgdir/usr/lib/frankenstein/control.py"
     install -Dm644 lib/profiles.py "$pkgdir/usr/lib/frankenstein/profiles.py"
     install -Dm644 lib/releases.py "$pkgdir/usr/lib/frankenstein/releases.py"
+    install -Dm644 lib/engine_update.py "$pkgdir/usr/lib/frankenstein/engine_update.py"
     install -Dm644 lib/provision.py "$pkgdir/usr/lib/frankenstein/provision.py"
     install -Dm644 lib/device_sync.py "$pkgdir/usr/lib/frankenstein/device_sync.py"
     install -Dm644 assets/frankenstein-sync.service "$pkgdir/usr/lib/systemd/user/frankenstein-sync.service"

@@ -226,12 +226,12 @@ def install_target(node, config, password, luks_secret, manifest, supplied=None)
         chroot('passwd', '-l', 'root')
         write('etc/sudoers.d/10-frankenstein', '%wheel ALL=(ALL:ALL) ALL\n', 0o440)
         chroot('visudo', '-cf', '/etc/sudoers')
-        staging = TARGET / 'var/tmp/frankenstein-packages'
-        staging.mkdir(mode=0o700)
+        staging = TARGET / 'var/cache/pacman/pkg'
+        staging.mkdir(mode=0o755, parents=True, exist_ok=True)
         for name in manifest['packages']:
             shutil.copyfile(PAYLOAD / 'packages' / name, staging / name)
-        chroot('pacman', '-U', '--noconfirm', *['/var/tmp/frankenstein-packages/' + n for n in manifest['packages']])
-        shutil.rmtree(staging)
+            (staging / name).chmod(0o644)
+        chroot('pacman', '-U', '--noconfirm', *['/var/cache/pacman/pkg/' + n for n in manifest['packages']])
         for selection in ('shell', 'openbox'):
             # Fresh useradd skeleton is deliberately superseded by the selected profile.
             chroot('runuser', '-u', user, '--', 'frankenstein', 'profile', 'apply', selection, '--replace')
