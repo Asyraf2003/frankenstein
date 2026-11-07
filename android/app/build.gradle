@@ -8,6 +8,11 @@ if (versionParts[1] > 999 || versionParts[2] > 999 || engineVersionCode < 1 || e
     throw new GradleException('VERSION cannot be represented as an Android versionCode')
 }
 def signingProof = providers.gradleProperty('signingProof').isPresent()
+def isolatedProof = providers.gradleProperty('isolatedProof').isPresent()
+// Public OAuth identifiers registered for these package/signing identities.
+def googleProduction = '312616303190-b6uef8tbl2bels0h4ful14fc8r2r66lu.apps.googleusercontent.com'
+def googleIsolatedProof = '312616303190-ecmdcetvoep27iceg1ib02o914acfhi3.apps.googleusercontent.com'
+def googleScheme = { id -> 'com.googleusercontent.apps.' + id.replace('.apps.googleusercontent.com', '') }
 def signingInputs = ['KEYSTORE', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD'].collectEntries {
     [(it): providers.environmentVariable('ANDROID_RELEASE_' + it).orNull]
 }
@@ -27,8 +32,9 @@ android {
         versionCode engineVersionCode.toInteger()
         versionName engineVersion
         buildConfigField 'String', 'ENGINE_REVISION', '"' + sourceRevision + '"'
+        buildConfigField 'String', 'GOOGLE_DRIVE_CLIENT_ID', '"' + googleProduction + '"'
         testInstrumentationRunner 'org.frankenstein.companion.StorageInstrumentation'
-        manifestPlaceholders = [appLabel: 'Frankenstein (development)']
+        manifestPlaceholders = [appLabel: 'Frankenstein (development)', googleOAuthScheme: googleScheme(googleProduction)]
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     sourceSets {
@@ -48,9 +54,11 @@ android {
     } }
     buildTypes {
         debug {
-            applicationIdSuffix providers.gradleProperty('isolatedProof').isPresent() ? '.dev.proof' : '.dev'
+            applicationIdSuffix isolatedProof ? '.dev.proof' : '.dev'
             versionNameSuffix '-dev'
-            if (providers.gradleProperty('isolatedProof').isPresent()) manifestPlaceholders = [appLabel: 'Frankenstein (isolated test)']
+            buildConfigField 'String', 'GOOGLE_DRIVE_CLIENT_ID', '"' + (isolatedProof ? googleIsolatedProof : '') + '"'
+            manifestPlaceholders = [appLabel: isolatedProof ? 'Frankenstein (isolated test)' : 'Frankenstein (development)',
+                googleOAuthScheme: isolatedProof ? googleScheme(googleIsolatedProof) : 'org.frankenstein.companion.dev.oauth-disabled']
         }
         release {
             debuggable false
@@ -59,6 +67,8 @@ android {
             if (signingProof) {
                 applicationIdSuffix '.dev.releaseproof'
                 versionNameSuffix '-signing-test'
+                buildConfigField 'String', 'GOOGLE_DRIVE_CLIENT_ID', '""'
+                manifestPlaceholders.googleOAuthScheme = 'org.frankenstein.companion.dev.releaseproof.oauth-disabled'
             }
         }
     }

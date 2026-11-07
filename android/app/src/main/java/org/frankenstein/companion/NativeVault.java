@@ -81,21 +81,27 @@ final class NativeVault {
         }
     }
     String amendGitHub(BlobStore store, String expected, JSONObject credential) throws Exception {
+        return amendCredential(store, expected, "credentials/github.json", credential);
+    }
+    String amendGoogleDrive(BlobStore store, String expected, JSONObject credential) throws Exception {
+        return amendCredential(store, expected, "credentials/google-drive.json", credential);
+    }
+    private String amendCredential(BlobStore store, String expected, String path, JSONObject credential) throws Exception {
         if (expected.equals(EMPTY) || !current().equals(expected)) throw new IOException("Vault conflict: selected generation changed");
         byte[] secret = credential.toString().getBytes(StandardCharsets.UTF_8);
-        byte[] request = new JSONObject().put("path", "credentials/github.json")
+        byte[] request = new JSONObject().put("path", path)
             .put("base64", android.util.Base64.encodeToString(secret, android.util.Base64.NO_WRAP))
             .toString().getBytes(StandardCharsets.UTF_8);
         byte[] bundle = null;
         try (DataInputStream original = store.open(expected)) {
             long length = original.readLong();
-            if (length > 16 * 1024 * 1024 || secret.length > 65536) throw new IOException("GitHub onboarding supports vaults up to 16 MiB");
+            if (length > 16 * 1024 * 1024 || secret.length > 65536) throw new IOException("Account onboarding supports vaults up to 16 MiB");
             ByteArrayOutputStream prefix = new ByteArrayOutputStream();
             DataOutputStream framed = new DataOutputStream(prefix);
             framed.writeInt(request.length);
             framed.write(request);
             InputStream input = new SequenceInputStream(new ByteArrayInputStream(prefix.toByteArray()), original);
-            bundle = run(input, prefix.size() + length, Arrays.asList(executable, "amend-github"), 16 * 1024 * 1024);
+            bundle = run(input, prefix.size() + length, Arrays.asList(executable, "amend-credential"), 16 * 1024 * 1024);
             String id = Identity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bundle));
             store.put(id, bundle.length, new ByteArrayInputStream(bundle));
             activate(store, id, expected);
