@@ -1,9 +1,13 @@
 import copy
+from contextlib import nullcontext
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -82,6 +86,72 @@ class Installer(unittest.TestCase):
              patch.object(installer, 'install') as execute:
             self.assertEqual(installer.main(['--disk', '/dev/vda']), 0)
             execute.assert_not_called()
+
+    def test_execution_requires_an_explicit_engine_channel_before_providers(self):
+        with patch.object(installer, 'selected_disk', return_value=self.disk), patch.object(installer, 'run') as run:
+            with self.assertRaises(SystemExit) as rejected:
+                installer.main(['--disk', '/dev/vda', '--execute'])
+            self.assertEqual(rejected.exception.code, 2)
+            run.assert_not_called()
+
+    def test_release_failure_never_falls_back_to_embedded_packages(self):
+        failure = type('ReleaseError', (Exception,), {})
+        provider = SimpleNamespace(Error=failure, owner_credentials=nullcontext)
+        def refuse(*args):
+            raise failure('untrusted release')
+        provider.stage = refuse
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {'releases': provider}), \
+                patch.object(installer, 'verify_payload') as embedded, patch.object(installer, 'run') as native:
+            with self.assertRaisesRegex(installer.Error, 'no experimental fallback'):
+                installer.select_engine('v0.2.0', False, temp)
+            embedded.assert_not_called()
+            native.assert_not_called()
+
+    def test_stable_selection_uses_verified_native_metadata_and_records_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package_bytes = b'synthetic package'
+            packages = {f'frankenstein-{role}-0.2.0-1-any.pkg.tar.zst': hashlib.sha256(package_bytes).hexdigest()
+                        for role in ('core', 'openbox')}
+            manifest = {'version': '0.2.0', 'commit': 'a' * 40, 'packages': packages}
+            def stage(tag, output):
+                self.assertEqual(tag, 'v0.2.0')
+                output.mkdir()
+                (output / 'engine.json').write_text(json.dumps(manifest))
+                for name in packages:
+                    (output / name).write_bytes(package_bytes)
+                return output
+            provider = SimpleNamespace(Error=RuntimeError, owner_credentials=nullcontext, stage=stage,
+                                       validate_manifest=lambda value, tag: value, REPOSITORY='Asyraf2003/frankenstein')
+            def native(*args, **kwargs):
+                self.assertEqual(args[:2], ('pacman', '-Qp'))
+                role, version, release = args[2].name.removesuffix('-any.pkg.tar.zst').rsplit('-', 2)
+                return role + ' ' + version + '-' + release
+            with patch.dict(sys.modules, {'releases': provider}), patch.object(installer, 'run', native):
+                result = installer.select_engine('v0.2.0', False, root)
+            self.assertEqual(result['source']['channel'], 'stable')
+            self.assertEqual(result['source']['commit'], 'a' * 40)
+            self.assertEqual(result['_directory'], root / 'selected-engine')
+            (result['_directory'] / next(iter(packages))).write_bytes(b'changed after selection')
+            with patch.object(installer, 'run') as writes:
+                with self.assertRaisesRegex(installer.Error, 'integrity'):
+                    installer.install_target(self.disk, {}, '', '', result)
+                writes.assert_not_called()
+
+    def test_release_asset_name_cannot_hide_another_native_package(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = {'version': '0.2.0', 'commit': 'a' * 40, 'packages': {}}
+            for role in ('core', 'openbox'):
+                name = f'frankenstein-{role}-0.2.0-1-any.pkg.tar.zst'
+                (root / name).write_bytes(b'fixture')
+                manifest['packages'][name] = hashlib.sha256(b'fixture').hexdigest()
+            (root / 'engine.json').write_text(json.dumps(manifest))
+            provider = SimpleNamespace(Error=RuntimeError, owner_credentials=nullcontext, stage=lambda *args: root,
+                                       validate_manifest=lambda value, tag: value)
+            with patch.dict(sys.modules, {'releases': provider}), patch.object(installer, 'run', return_value='other-package 9-1'):
+                with self.assertRaisesRegex(installer.Error, 'metadata differs'):
+                    installer.select_engine('v0.2.0', False, root)
 
     def test_partition_names(self):
         self.assertEqual(installer.partition('/dev/sda', 1), '/dev/sda1')

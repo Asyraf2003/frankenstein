@@ -27,6 +27,8 @@ HELP = """Usage: frankenstein COMMAND [ARGS]
   recovery-key enroll|verify|recipient [ARGS] (native age passphrase prompt)
   recover-backup --source ENCRYPTED_ZIP --output NEW_PRIVATE_DIRECTORY --sha256 DIGEST [--identity DEVICE_KEY]
   vault-backup --repository OWNER/PRIVATE_REPO capture|publish|restore [ARGS]
+  vaultwarden --config SERVICE_JSON on|off|status|backup|cloud-backup|recover|connect
+  vault-provision capture|attach|restore [ARGS] (carry a native capture; preserve existing services)
   usb --serial DEVICE --state PRIVATE_DIRECTORY pair|push|pull|receive|current|activate [ARGS]
   portable create|restore [ARGS] (private provisioning bundle; never store in Git)
   provision --serial DEVICE --state PRIVATE_DIRECTORY --output NEW_PRIVATE_DIRECTORY
@@ -197,6 +199,11 @@ def main(args):
         return call([sys.executable, '/usr/lib/frankenstein/vault/recovery_backup.py', *args[1:]]).returncode
     if args[0] == 'vault-backup':
         return call([sys.executable, '/usr/lib/frankenstein/vault/backup.py', *args[1:]]).returncode
+    if args[0] == 'vaultwarden':
+        return call([sys.executable, '/usr/lib/frankenstein/vault/vaultwarden.py', *args[1:]], privileged=True).returncode
+    if args[0] == 'vault-provision':
+        return call([sys.executable, '/usr/lib/frankenstein/vault_provision.py', *args[1:]],
+                    privileged=args[1:2] in (['restore'], ['capture'])).returncode
     if args[0] == 'usb':
         return call([sys.executable, '/usr/lib/frankenstein/transport/usb.py', *args[1:]]).returncode
     if args[0] == 'portable':

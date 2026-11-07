@@ -38,7 +38,7 @@ def user_token(home, uid):
     if not isinstance(token, str) or not re.fullmatch('[A-Za-z0-9_]{16,4096}', token):
         raise Error('invalid stored GitHub token')
     if not isinstance(expires, (int, float)) or expires <= time.time() * 1000 + 120000:
-        raise Error('GitHub session expired; refresh on the paired phone and sync before updating')
+        raise Error('GitHub session expired; refresh on the paired phone and sync before this operation')
     return token
 
 
