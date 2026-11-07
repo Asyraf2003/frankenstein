@@ -38,5 +38,11 @@ while IFS= read -r package; do
     fi
 done < <(makepkg --packagelist)
 (( ${#packages[@]} > 0 )) || exit 1
-sudo pacman -U -- "${packages[@]}"
+cached_packages=()
+for package in "${packages[@]}"; do
+    cached="/var/cache/pacman/pkg/${package##*/}"
+    sudo install -m0644 -- "$package" "$cached"
+    cached_packages+=("$cached")
+done
+sudo pacman -U -- "${cached_packages[@]}"
 printf '%s\n' 'Installed. Inspect frankenstein --help; profiles and services require explicit actions.'

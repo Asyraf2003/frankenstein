@@ -1,12 +1,16 @@
 """Stage a selected stable native engine release; never consume a branch as an update."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 REPOSITORY = 'Asyraf2003/frankenstein'
 WORKFLOW = 'https://github.com/' + REPOSITORY + '/.github/workflows/release.yml@refs/heads/main'
@@ -14,6 +18,56 @@ WORKFLOW = 'https://github.com/' + REPOSITORY + '/.github/workflows/release.yml@
 
 class Error(Exception):
     pass
+
+
+def user_token(home, uid):
+    path = Path(home) / '.local/state/frankenstein/ecosystem/state/credentials/github.json'
+    if not path.exists() and not path.is_symlink():
+        return None
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise Error('GitHub credential path contains a symlink')
+    info = path.stat()
+    if not path.is_file() or info.st_uid != uid or info.st_mode & 0o077 or info.st_size > 16384:
+        raise Error('GitHub credentials must remain private and owned by the invoking user')
+    try:
+        tokens = json.loads(path.read_bytes())['tokens']
+        token = tokens['access_token']
+        expires = tokens.get('expires_at', float('inf'))
+    except (ValueError, KeyError, TypeError):
+        raise Error('invalid stored GitHub credentials') from None
+    if not isinstance(token, str) or not re.fullmatch('[A-Za-z0-9_]{16,4096}', token):
+        raise Error('invalid stored GitHub token')
+    if not isinstance(expires, (int, float)) or expires <= time.time() * 1000 + 120000:
+        raise Error('GitHub session expired; refresh on the paired phone and sync before updating')
+    return token
+
+
+@contextmanager
+def owner_credentials():
+    """Let sudo use the invoking owner's session without putting tokens in argv/files."""
+    saved = {name: os.environ.get(name) for name in ('GH_TOKEN', 'GH_HOST')}
+    try:
+        uid = int(os.environ.get('SUDO_UID', os.getuid())) if os.geteuid() == 0 else os.getuid()
+        owner = pwd.getpwuid(uid)
+        if not os.environ.get('GH_TOKEN'):
+            token = user_token(owner.pw_dir, uid)
+            if token is None and os.geteuid() == 0 and uid != 0:
+                result = subprocess.run(['/usr/sbin/runuser', '-u', owner.pw_name, '--', '/usr/bin/gh',
+                                         'auth', 'token', '--hostname', 'github.com'], capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    candidate = result.stdout.strip()
+                    if re.fullmatch('[A-Za-z0-9_]{16,4096}', candidate):
+                        token = candidate
+            if token:
+                os.environ['GH_TOKEN'] = token
+        os.environ['GH_HOST'] = 'github.com'
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def gh(*args):
