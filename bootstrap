@@ -29,6 +29,7 @@ build=$(mktemp -d "${TMPDIR:-/tmp}/frankenstein-build.XXXXXXXX")
 # Preserve the build directory and packages for inspection or native pacman -U.
 printf 'BUILD_DIRECTORY=%s\n' "$build"
 cp -R -- "$root/bin" "$root/lib" "$root/profiles" "$root/assets" "$root/tests" "$root/packaging" "$root/licenses" "$root/installer" "$root/vault" "$root/transport" "$root/VERSION" "$root/LICENSE" "$build/"
+install -Dm644 "$root/android/verify-release.py" "$build/android/verify-release.py"
 cd -- "$build/packaging"
 makepkg --syncdeps --cleanbuild
 packages=()
