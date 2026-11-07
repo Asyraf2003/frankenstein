@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -57,6 +58,18 @@ class VM:
         self.child.expect(token + r':(\d+)\r*\n', timeout=timeout)
         if self.child.match.group(1) != '0':
             raise RuntimeError('guest command failed: ' + command)
+
+    def sudo(self, command, timeout=120):
+        # Authenticate this actual command; sudo -k -v does not guarantee a
+        # reusable cached timestamp. All credentials here belong to the VM fixture.
+        token = secrets.token_hex(12)
+        self.child.sendline("sudo -k -p 'TEST_''SUDO:' sh -ec " + shlex.quote(command)
+                            + "; printf '\\n" + token + ":%s\\n' \"$?\"")
+        self.child.expect_exact('TEST_SUDO:')
+        self.child.sendline(ACCOUNT_SECRET)
+        self.child.expect(token + r':(\d+)\r*\n', timeout=timeout)
+        if self.child.match.group(1) != '0':
+            raise RuntimeError('privileged guest command failed: ' + command)
 
     def qmp(self, command, arguments):
         with socket.socket(socket.AF_UNIX) as sock:
@@ -116,14 +129,14 @@ def main():
         fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fixture)
         bundle = state / 'synthetic-install.fpe'
-        selected = fixture.create(bundle, SECRET, recovery=False, account_password=ACCOUNT_SECRET)
+        selected = fixture.create(bundle, SECRET, recovery=False, account_password=ACCOUNT_SECRET, vaultwarden=True)
         encoded = base64.b64encode(bundle.read_bytes()).decode()
         vm.command('umask 077; : > /root/provision.b64')
         # Keep each serial terminal line below the canonical input limit.
         for start in range(0, len(encoded), 1024):
             vm.command("printf '%s' '" + encoded[start:start + 1024] + "' >> /root/provision.b64")
         vm.command('base64 -d /root/provision.b64 > /root/provision.fpe && rm /root/provision.b64')
-        vm.child.sendline('frankenstein-install --disk /dev/vda --provisioning-bundle /root/provision.fpe --sha256 ' + selected + ' --execute')
+        vm.child.sendline('frankenstein-install --disk /dev/vda --experimental-engine --provisioning-bundle /root/provision.fpe --sha256 ' + selected + ' --execute')
         # Account/disk credentials come from the verified synthetic vault. Only
         # this disposable disk's explicit destructive approval is automated.
         vm.child.expect(r'ERASE /dev/vda [a-f0-9]{12}')
@@ -157,6 +170,8 @@ def main():
         vm.command("test -r ~/.local/state/frankenstein/ecosystem/identity.txt && test \"$(stat -c %a ~/.local/state/frankenstein/ecosystem/identity.txt)\" = 600")
         vm.command("grep -qx '{\"fixture\":\"portable-tuning-preserved\"}' ~/.local/state/frankenstein/ecosystem/state/desired/tuning.json")
         vm.command('frankenstein vault inspect --candidate ~/.local/state/frankenstein/ecosystem/vault.age --identity ~/.local/state/frankenstein/ecosystem/identity.txt --context ~/.local/state/frankenstein/ecosystem/context.json')
+        vm.sudo('test -f /var/lib/frankenstein/vault/data/db.sqlite3; grep -qx portable-vaultwarden-preserved /var/lib/frankenstein/vault/data/fixture; test ! -e /var/lib/frankenstein/vault/network; test "$(stat -c %a /var/lib/frankenstein/vault/identity.txt)" = 600')
+        vm.command('pacman -Q docker docker-compose && ! systemctl is-active --quiet docker.service')
         vm.keys('proof')
         time.sleep(2)
         vm.keys(ACCOUNT_SECRET)
@@ -192,7 +207,9 @@ def main():
             'LTS recovery boot', 'LTS LUKS unlock and PAM login', 'LTS first-boot verification'],
             'provisioning': ['synthetic encrypted bundle supplies account and disk credentials',
                              'four-character numeric login/sudo password', 'optional recovery skipped; surviving device key opens vault',
-                             'private tuning retained', 'portable vault independently opens after boot'],
+                             'private tuning retained', 'portable vault independently opens after boot',
+                             'Vaultwarden database and attachment restored on LUKS',
+                             'Vaultwarden runtime installed and stopped; network identity not cloned'],
             'not_verified': ['physical hardware', 'USB pairing inside VM', 'generation rollback']}, indent=2) + '\n')
         print('CLEAN_DISK_VM_PROOF=PASS')
     except Exception:
