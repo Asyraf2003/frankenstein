@@ -31,30 +31,46 @@ final class Enrollment {
         CheckBox saved = new CheckBox(activity);
         saved.setText("I recorded my recovery passphrase outside these devices and will export the encrypted backup.");
         layout.addView(saved);
+        TextView validation = new TextView(activity);
+        validation.setTextColor(android.graphics.Color.rgb(150, 20, 20));
+        validation.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        layout.addView(validation);
+        Map<String,EditText> inputs = new LinkedHashMap<>();
+        inputs.put("username", username); inputs.put("hostname", hostname); inputs.put("timezone", zone);
+        inputs.put("password", password); inputs.put("repeat_password", repeatPassword);
+        inputs.put("disk", diskPassword); inputs.put("repeat_disk", repeatDisk);
+        inputs.put("recovery", phrase); inputs.put("repeat_recovery", repeatPhrase);
         Button create = new Button(activity);
         create.setText("Create encrypted vault");
         create.setFilterTouchesWhenObscured(true);
         create.setOnClickListener(view -> {
             if (!active) return;
             try {
+                Map<String,String> values = new LinkedHashMap<>();
+                for (Map.Entry<String,EditText> input : inputs.entrySet()) {
+                    input.getValue().setError(null);
+                    values.put(input.getKey(), input.getValue().getText().toString());
+                }
+                saved.setError(null);
+                Map<String,String> errors = EnrollmentValidation.errors(values, saved.isChecked());
+                values.clear();
+                if (!errors.isEmpty()) {
+                    validation.setText("Vault was not created. Fix these fields:\n\n" + String.join("\n", errors.values()));
+                    for (Map.Entry<String,String> error : errors.entrySet()) {
+                        if (error.getKey().equals("saved")) saved.setError(error.getValue());
+                        else inputs.get(error.getKey()).setError(error.getValue());
+                    }
+                    String first = errors.keySet().iterator().next();
+                    if (!first.equals("saved")) inputs.get(first).requestFocus();
+                    return;
+                }
+                validation.setText("");
                 String user = username.getText().toString();
                 String host = hostname.getText().toString();
                 String timezone = zone.getText().toString();
                 String account = password.getText().toString();
                 String recovery = phrase.getText().toString();
-                if (!user.matches("[a-z][a-z0-9_-]{0,30}") || user.equals("root") ||
-                    !host.matches("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?") ||
-                    !Arrays.asList(TimeZone.getAvailableIDs()).contains(timezone))
-                    throw new IllegalArgumentException("Check the username, hostname and timezone.");
-                if (!secret(account, 12) || !account.equals(repeatPassword.getText().toString()))
-                    throw new IllegalArgumentException("Account passwords must match and contain at least 12 characters.");
-                if (!secret(recovery, 20) || !recovery.equals(repeatPhrase.getText().toString()) || recovery.equals(account) || !saved.isChecked())
-                    throw new IllegalArgumentException("Use a separate matching recovery passphrase, at least 20 characters, and confirm its external copy.");
                 String diskSecret = diskPassword.getText().toString();
-                if (!secret(diskSecret, 12) || !diskSecret.equals(repeatDisk.getText().toString()))
-                    throw new IllegalArgumentException("Disk unlock passphrases must match and contain at least 12 characters.");
-                if (diskSecret.equals(recovery))
-                    throw new IllegalArgumentException("Keep the recovery passphrase separate from the disk unlock passphrase.");
                 JSONObject files = new JSONObject();
                 add(files, "desired/arch.json", new JSONObject().put("username", user).put("hostname", host)
                     .put("timezone", timezone).put("packages", new JSONArray()));
@@ -68,26 +84,44 @@ final class Enrollment {
                 clear();
                 create.setEnabled(false);
                 submit.accept(request);
-            } catch (IllegalArgumentException error) { status.setText(error.getMessage()); }
-            catch (JSONException error) { status.setText("Setup could not be prepared. No vault was changed."); }
+            } catch (JSONException error) { validation.setText("Setup could not be prepared. No vault was changed. Please try again."); }
         });
         layout.addView(create);
     }
     static void add(JSONObject files, String name, JSONObject content) throws JSONException {
         files.put(name, android.util.Base64.encodeToString(content.toString().getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP));
     }
-    private static boolean secret(String value, int minimum) {
-        return value.codePointCount(0, value.length()) >= minimum && value.length() <= 4096 &&
-            value.indexOf('\n') < 0 && value.indexOf('\r') < 0 && value.indexOf('\0') < 0;
-    }
     private EditText field(Activity activity, LinearLayout layout, String label, boolean secret) {
+        TextView caption = new TextView(activity);
+        caption.setText(label);
+        layout.addView(caption);
         EditText field = new EditText(activity);
         field.setHint(label);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
         field.setSaveEnabled(false);
         field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        layout.addView(field);
+        if (secret) {
+            LinearLayout row = new LinearLayout(activity);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.addView(field, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            Button visibility = new Button(activity);
+            visibility.setText("Show");
+            visibility.setContentDescription("Show " + label);
+            visibility.setFilterTouchesWhenObscured(true);
+            visibility.setOnClickListener(view -> {
+                if (!active) return;
+                boolean hidden = field.getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod;
+                int cursor = field.getSelectionStart();
+                field.setTransformationMethod(hidden ? android.text.method.HideReturnsTransformationMethod.getInstance() :
+                    android.text.method.PasswordTransformationMethod.getInstance());
+                if (cursor >= 0) field.setSelection(Math.min(cursor, field.length()));
+                visibility.setText(hidden ? "Hide" : "Show");
+                visibility.setContentDescription((hidden ? "Hide " : "Show ") + label);
+            });
+            row.addView(visibility);
+            layout.addView(row);
+        } else layout.addView(field);
         fields.add(field);
         return field;
     }

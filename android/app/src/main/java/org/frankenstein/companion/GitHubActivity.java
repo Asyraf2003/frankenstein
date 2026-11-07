@@ -68,7 +68,10 @@ public final class GitHubActivity extends Activity {
         field.setSaveEnabled(false); layout.addView(field); return field;
     }
     private void home() {
-        screen("GitHub private backup\n\nOnly encrypted vault data and recovery metadata are uploaded. Keep your recovery passphrase outside this phone. Cloud limit: 8 MiB.\n\nGitHub's repo permission covers public and private repositories; Frankenstein writes only the private repository and branch you select.");
+        screen("GitHub private backup");
+        TextView disclosure = new TextView(this);
+        disclosure.setText("Only encrypted vault data and recovery metadata are uploaded. Keep your recovery passphrase outside this phone. Cloud limit: 8 MiB.\n\nGitHub's repo permission covers public and private repositories; Frankenstein writes only the private repository and branch you select.");
+        layout.addView(disclosure);
         button("Sign in / authorize this device",()->{
             if (busy) return;
             run(client->{ expectedKit=new GitHubSession(this).currentKit(); return client.begin(); },value->{ device=value; deviceScreen(); poll(); });
@@ -164,6 +167,8 @@ public final class GitHubActivity extends Activity {
     }
     private <T> void run(Action<T> action,Done<T> done) {
         if (busy || !foreground) return;
+        if (((KeyguardManager)getSystemService(KEYGUARD_SERVICE)).isDeviceLocked() ||
+            android.os.SystemClock.elapsedRealtime()-approvedAt>15*60*1000L) { finish(); return; }
         busy=true; int requested=epoch; GitHubClient client=new GitHubClient(); active=client;
         worker.execute(()->{
             T value=null; String error=null;
