@@ -3,9 +3,14 @@ set -euo pipefail
 [[ -f /.dockerenv && ${FRANKENSTEIN_DISPOSABLE:-} == 1 ]] || exit 77
 pacman -Syu --noconfirm --needed base-devel python sudo xorg-server-xvfb xdotool wmctrl xorg-xprop libpulse
 useradd -m -s /bin/bash builder
-printf 'builder ALL=(root) NOPASSWD: /usr/bin/pacman\n' > /etc/sudoers.d/frankenstein-test-builder
+printf 'builder ALL=(root) NOPASSWD: /usr/bin/pacman, /usr/bin/install\n' > /etc/sudoers.d/frankenstein-test-builder
 chmod 0440 /etc/sudoers.d/frankenstein-test-builder
-cp -R /source /build
+# Copy package inputs only; local Android/Gradle output and Git history are not inputs.
+mkdir -p /build/vault
+for input in bootstrap bin lib profiles assets tests packaging licenses installer transport VERSION LICENSE; do
+    cp -R "/source/$input" "/build/"
+done
+cp /source/vault/*.py /build/vault/
 chown -R builder:builder /build
 runuser -u builder -- bash -c 'cd /build && printf "\n\n\n\n" | ./bootstrap openbox'
 pacman -Qkk frankenstein-core frankenstein-openbox
@@ -18,4 +23,5 @@ runuser -u tester -- frankenstein profile rollback
 runuser -u tester -- frankenstein profile verify
 test ! -e /home/tester/.xinitrc
 test ! -e /home/tester/.config/openbox/rc.xml
+bash /source/tests/arch-engine.sh
 printf 'ARCH_OPENBOX_PROOF=PASS\n'

@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify Frankenstein base on each boot
+After=NetworkManager.service
+Wants=NetworkManager.service
+ConditionPathExists=/etc/frankenstein/install.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python /usr/lib/frankenstein/first_boot.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
