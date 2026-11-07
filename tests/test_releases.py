@@ -2,6 +2,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -98,6 +99,34 @@ class Releases(unittest.TestCase):
             with self.assertRaisesRegex(release.Error, 'not been integrated'):
                 release.stage('v0.2.0', Path(temp) / 'ready')
             self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_portable_owner_token_requires_private_file_and_valid_expiry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / '.local/state/frankenstein/ecosystem/state/credentials/github.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'tokens': {'access_token': 'gho_synthetic_fixture_only'}}))
+            path.chmod(0o600)
+            self.assertEqual(release.user_token(temporary, os.getuid()), 'gho_synthetic_fixture_only')
+            path.chmod(0o644)
+            with self.assertRaisesRegex(release.Error, 'private'):
+                release.user_token(temporary, os.getuid())
+            path.chmod(0o600)
+            path.write_text(json.dumps({'tokens': {'access_token': 'gho_synthetic_fixture_only', 'expires_at': 1}}))
+            with self.assertRaisesRegex(release.Error, 'expired'):
+                release.user_token(temporary, os.getuid())
+
+    def test_owner_session_is_scoped_to_release_operation_and_never_in_arguments(self):
+        with patch.dict(os.environ, {'GH_HOST': 'different.example'}, clear=True), \
+                patch.object(release, 'user_token', return_value='gho_synthetic_fixture_only'), \
+                patch.object(release.subprocess, 'run') as native:
+            with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+                with release.owner_credentials():
+                    self.assertEqual(os.environ['GH_HOST'], 'github.com')
+                    self.assertEqual(os.environ['GH_TOKEN'], 'gho_synthetic_fixture_only')
+                    raise RuntimeError('synthetic failure')
+            self.assertNotIn('GH_TOKEN', os.environ)
+            self.assertEqual(os.environ['GH_HOST'], 'different.example')
+            native.assert_not_called()
 
 
 if __name__ == '__main__':

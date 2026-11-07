@@ -30,6 +30,9 @@ def windows(name):
 
 with tempfile.TemporaryDirectory(prefix='frankenstein-session-') as runtime:
     os.environ['XDG_RUNTIME_DIR'] = runtime
+    # Own the Pulse runtime before any desktop/libpulse client can create it.
+    # The fixture has no systemd user socket unit to establish this directory.
+    (Path(runtime) / 'pulse').mkdir(mode=0o700)
     os.environ['DISPLAY'] = ':93'
     children = []
     logs = []
