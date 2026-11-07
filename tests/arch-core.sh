@@ -12,6 +12,7 @@ for input in bootstrap bin lib profiles assets tests packaging licenses installe
     cp -R "/source/$input" "/build/"
 done
 cp /source/vault/*.py /build/vault/
+install -Dm644 /source/android/verify-release.py /build/android/verify-release.py
 chown -R builder:builder /build
 runuser -u builder -- bash -c 'cd /build && printf "\n\n\n\n" | ./bootstrap core'
 pacman -Qkk frankenstein-core

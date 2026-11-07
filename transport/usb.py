@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 
-APP = 'org.frankenstein.companion.dev'
+APP = 'org.frankenstein.companion'
 MAX_BYTES = 8 * 1024**3
 
 

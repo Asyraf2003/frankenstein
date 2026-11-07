@@ -19,7 +19,7 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main' && github.repository == 'Asyraf2003/frankenstein'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
       id-token: write
@@ -39,6 +39,16 @@ jobs:
           test "$(bash -c 'source packaging/PKGBUILD; printf %s "$pkgver"')" = "$SELECTED_VERSION"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           if git show-ref --verify --quiet "refs/tags/v$SELECTED_VERSION"; then exit 1; fi
+      - name: Require the existing maintainer signing identity
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          SIGNER: ${{ vars.ANDROID_RELEASE_SIGNER_SHA256 }}
+        run: |
+          test -n "$KEYSTORE" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          [[ "$SIGNER" =~ ^[0-9a-fA-F]{64}$ ]]
       - name: Native package and desktop regression checks
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
@@ -46,12 +56,17 @@ jobs:
           bash tests/container.sh openbox
       - name: Build native packages
         run: |
-          mkdir out
+          mkdir -p out
           docker run --rm --mount "type=bind,src=$PWD,dst=/source,readonly" \
             --mount "type=bind,src=$PWD/out,dst=/out" archlinux:base bash -euc '
               pacman -Syu --noconfirm --needed base-devel python
               useradd -m builder
-              cp -a /source /build
+              mkdir -p /build/vault /build/android
+              for input in bootstrap bin lib profiles assets tests packaging licenses installer transport VERSION LICENSE; do
+                cp -R "/source/$input" /build/
+              done
+              cp /source/vault/*.py /build/vault/
+              cp /source/android/verify-release.py /build/android/
               chown -R builder:builder /build
               runuser -u builder -- bash -c "cd /build/packaging; makepkg --nodeps"
               cp /build/packaging/*.pkg.tar.zst /out/
@@ -66,10 +81,47 @@ jobs:
           assert len(packages) == 2
           Path('out/engine.json').write_text(json.dumps({'version': Path('VERSION').read_text().strip(), 'commit': os.environ['GITHUB_SHA'], 'packages': packages})+'\n')
           PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-disabled: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: vault/native/go.sum
+      - name: Build companion native vault and run JVM regression tests
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" "build-tools;35.0.0" "platforms;android-35"
+          bash android/build-native.sh
+          bash android/gradlew -p android --no-daemon :app:testDebugUnitTest
+      - name: Sign and verify the versioned production companion
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_SIGNER_SHA256: ${{ vars.ANDROID_RELEASE_SIGNER_SHA256 }}
+          FRANKENSTEIN_RELEASE_AUTHORIZED: ${{ inputs.version }}
+        run: |
+          umask 077
+          private=$(mktemp -d "$RUNNER_TEMP/android-release.XXXXXX")
+          trap 'rm -rf -- "$private"' EXIT
+          export ANDROID_RELEASE_KEYSTORE="$private/maintainer.p12"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_RELEASE_KEYSTORE"
+          unset ANDROID_RELEASE_KEYSTORE_BASE64
+          bash android/gradlew -p android --no-daemon :app:assembleRelease "-PengineRevision=$GITHUB_SHA"
+          apk="out/frankenstein-companion-$FRANKENSTEIN_RELEASE_AUTHORIZED.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          python3 android/verify-release.py --apk "$apk" --tools "$ANDROID_HOME/build-tools/35.0.0" \
+            --version "$FRANKENSTEIN_RELEASE_AUTHORIZED" --revision "$GITHUB_SHA" \
+            --signer "$ANDROID_RELEASE_SIGNER_SHA256" > out/companion.json
       - uses: actions/attest-build-provenance@v3
         with:
           subject-path: out/*
-      - name: Publish versioned packages (never PR images)
+      - name: Publish versioned packages and signed companion (never PR images)
         env:
           GH_TOKEN: ${{ github.token }}
           SELECTED_VERSION: ${{ inputs.version }}
