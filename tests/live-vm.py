@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -57,6 +58,18 @@ class VM:
         self.child.expect(token + r':(\d+)\r*\n', timeout=timeout)
         if self.child.match.group(1) != '0':
             raise RuntimeError('guest command failed: ' + command)
+
+    def sudo(self, command, timeout=120):
+        # Authenticate this actual command; sudo -k -v does not guarantee a
+        # reusable cached timestamp. All credentials here belong to the VM fixture.
+        token = secrets.token_hex(12)
+        self.child.sendline("sudo -k -p 'TEST_''SUDO:' sh -ec " + shlex.quote(command)
+                            + "; printf '\\n" + token + ":%s\\n' \"$?\"")
+        self.child.expect_exact('TEST_SUDO:')
+        self.child.sendline(ACCOUNT_SECRET)
+        self.child.expect(token + r':(\d+)\r*\n', timeout=timeout)
+        if self.child.match.group(1) != '0':
+            raise RuntimeError('privileged guest command failed: ' + command)
 
     def qmp(self, command, arguments):
         with socket.socket(socket.AF_UNIX) as sock:
@@ -157,11 +170,7 @@ def main():
         vm.command("test -r ~/.local/state/frankenstein/ecosystem/identity.txt && test \"$(stat -c %a ~/.local/state/frankenstein/ecosystem/identity.txt)\" = 600")
         vm.command("grep -qx '{\"fixture\":\"portable-tuning-preserved\"}' ~/.local/state/frankenstein/ecosystem/state/desired/tuning.json")
         vm.command('frankenstein vault inspect --candidate ~/.local/state/frankenstein/ecosystem/vault.age --identity ~/.local/state/frankenstein/ecosystem/identity.txt --context ~/.local/state/frankenstein/ecosystem/context.json')
-        vm.child.sendline("sudo -k -p 'VAULT_''SUDO:' -v")
-        vm.child.expect_exact('VAULT_SUDO:')
-        vm.child.sendline(ACCOUNT_SECRET)
-        vm.child.expect(r'\$ ')
-        vm.command("sudo -n sh -ec 'test -f /var/lib/frankenstein/vault/data/db.sqlite3; grep -qx portable-vaultwarden-preserved /var/lib/frankenstein/vault/data/fixture; test ! -e /var/lib/frankenstein/vault/network; test \"$(stat -c %a /var/lib/frankenstein/vault/identity.txt)\" = 600'")
+        vm.sudo('test -f /var/lib/frankenstein/vault/data/db.sqlite3; grep -qx portable-vaultwarden-preserved /var/lib/frankenstein/vault/data/fixture; test ! -e /var/lib/frankenstein/vault/network; test "$(stat -c %a /var/lib/frankenstein/vault/identity.txt)" = 600')
         vm.command('pacman -Q docker docker-compose && ! systemctl is-active --quiet docker.service')
         vm.keys('proof')
         time.sleep(2)
