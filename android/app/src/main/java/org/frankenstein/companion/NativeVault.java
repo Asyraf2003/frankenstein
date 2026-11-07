@@ -80,6 +80,32 @@ final class NativeVault {
             if (bundle != null) Arrays.fill(bundle, (byte)0);
         }
     }
+    String amendGitHub(BlobStore store, String expected, JSONObject credential) throws Exception {
+        if (expected.equals(EMPTY) || !current().equals(expected)) throw new IOException("Vault conflict: selected generation changed");
+        byte[] secret = credential.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] request = new JSONObject().put("path", "credentials/github.json")
+            .put("base64", android.util.Base64.encodeToString(secret, android.util.Base64.NO_WRAP))
+            .toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bundle = null;
+        try (DataInputStream original = store.open(expected)) {
+            long length = original.readLong();
+            if (length > 16 * 1024 * 1024 || secret.length > 65536) throw new IOException("GitHub onboarding supports vaults up to 16 MiB");
+            ByteArrayOutputStream prefix = new ByteArrayOutputStream();
+            DataOutputStream framed = new DataOutputStream(prefix);
+            framed.writeInt(request.length);
+            framed.write(request);
+            InputStream input = new SequenceInputStream(new ByteArrayInputStream(prefix.toByteArray()), original);
+            bundle = run(input, prefix.size() + length, Arrays.asList(executable, "amend-github"), 16 * 1024 * 1024);
+            String id = Identity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bundle));
+            store.put(id, bundle.length, new ByteArrayInputStream(bundle));
+            activate(store, id, expected);
+            return id;
+        } finally {
+            Arrays.fill(secret, (byte)0);
+            Arrays.fill(request, (byte)0);
+            if (bundle != null) Arrays.fill(bundle, (byte)0);
+        }
+    }
     private byte[] run(InputStream input, long length, List<String> args, int maximum) throws Exception {
         Process process = new ProcessBuilder(args).start();
         Timer watchdog = new Timer(true);

@@ -89,6 +89,10 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 6) {
+            if (result == RESULT_OK) startActivity(new Intent(this, GitHubActivity.class));
+            return;
+        }
         if (request == 3) {
             if (result == RESULT_OK) {
                 try {
@@ -188,6 +192,11 @@ public final class MainActivity extends Activity {
         if (server != null) { server.close(); server = null; status.setText("USB access stopped while the app is closed."); }
     }
     private void addVaultButton() {
+        Button github = new Button(this);
+        github.setText("GitHub private backup");
+        github.setFilterTouchesWhenObscured(true);
+        github.setOnClickListener(view -> authenticate("GitHub private backup", "Confirm ownership before account access", 6));
+        layout.addView(github);
         Button setup = new Button(this);
         setup.setText("Set up this phone");
         setup.setFilterTouchesWhenObscured(true);

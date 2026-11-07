@@ -109,11 +109,27 @@ class Portable(unittest.TestCase):
         self.assertEqual(result.returncode, 0, 'Native enrollment failed; private output withheld')
         self.assertEqual(result.stderr, b'')
         self.assertNotIn(phrase.encode(), result.stdout)
+        # GitHub onboarding amends the same identity and independent capsule.
+        original = result.stdout
+        original_header = json.loads(original[8:8 + struct.unpack('>I', original[4:8])[0]])
+        before = json.loads(subprocess.run([str(BRIDGE), 'verify'], input=original, capture_output=True, check=True).stdout)
+        credential = kit.encoded({'access_token': 'synthetic_github_token_only'})
+        patch_request = kit.encoded({'path': 'credentials/github.json', 'base64': base64.b64encode(credential).decode()})
+        result = subprocess.run([str(BRIDGE), 'amend-github'],
+            input=struct.pack('>I', len(patch_request)) + patch_request + original, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, 'Amendment failed; private output withheld')
+        self.assertNotIn(b'synthetic_github_token_only', result.stdout)
+        updated_header = json.loads(result.stdout[8:8 + struct.unpack('>I', result.stdout[4:8])[0]])
+        for field in ('identity', 'context', 'recovery', 'recovery_manifest_sha256'):
+            self.assertTrue(original_header[field] == updated_header[field], 'Identity/recovery changed')
+        after = json.loads(subprocess.run([str(BRIDGE), 'verify'], input=result.stdout, capture_output=True, check=True).stdout)
+        self.assertEqual(before['manifest']['kit_id'], after['manifest']['kit_id'])
         bundle = self.case / 'enrolled.fpe'
         bundle.write_bytes(result.stdout)
         restored = self.case / 'enrolled'
         portable.restore(bundle, restored, kit.sha(bundle))
         self.assertEqual((restored / 'state/desired/profile.json').read_bytes(), self.plain)
+        self.assertEqual((restored / 'state/credentials/github.json').read_bytes(), credential)
         # Delete the portable opening key and bundle. Recovery has only the
         # independently encrypted identity, ciphertext archive and external phrase.
         (restored / 'identity.txt').unlink()
@@ -124,6 +140,7 @@ class Portable(unittest.TestCase):
         self.assertEqual((code, supplied), (0, 1), 'Recovery failed; transcript withheld')
         with tarfile.open(recovered) as archive:
             self.assertEqual(archive.extractfile('payload/desired/profile.json').read(), self.plain)
+            self.assertEqual(archive.extractfile('payload/credentials/github.json').read(), credential)
         exported = self.case / 'backup.zip'
         with zipfile.ZipFile(exported, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
             for name in ('vault.age', 'context.json', 'recovery/identity.age', 'recovery/recipient.txt', 'recovery/manifest.json'):
@@ -136,6 +153,7 @@ class Portable(unittest.TestCase):
             '--output', recoveredDirectory, '--sha256', kit.sha(exported)], [phrase])
         self.assertEqual((code, supplied), (0, 1), 'Backup restore failed; transcript withheld')
         self.assertEqual((recoveredDirectory / 'state/desired/profile.json').read_bytes(), self.plain)
+        self.assertEqual((recoveredDirectory / 'state/credentials/github.json').read_bytes(), credential)
         self.assertEqual((recoveredDirectory / 'identity.txt').stat().st_mode & 0o777, 0o600)
         wrongDirectory = self.case / 'wrong-recovery'
         code, _, supplied = helper.tty([ROOT / 'vault/recovery_backup.py', '--source', exported,
@@ -147,6 +165,31 @@ class Portable(unittest.TestCase):
         rejected = subprocess.run([str(BRIDGE), 'enroll'], input=kit.encoded(request), capture_output=True, timeout=30)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertEqual(rejected.stdout, b'')
+
+    def test_amend_replacement_and_untrusted_input_fail_closed(self):
+        original = self.bundle.read_bytes()
+        def amend_bytes(bundle, path='credentials/github.json', data=b'{"fixture":1}'):
+            request = kit.encoded({'path': path, 'base64': base64.b64encode(data).decode()})
+            return subprocess.run([str(BRIDGE), 'amend-github'], input=struct.pack('>I', len(request)) + request + bundle,
+                                  capture_output=True, timeout=30)
+        first = amend_bytes(original)
+        self.assertEqual(first.returncode, 0, 'Amendment failed; private output withheld')
+        second = amend_bytes(first.stdout, data=b'{"fixture":2}')
+        self.assertEqual(second.returncode, 0, 'Replacement failed; private output withheld')
+        read = subprocess.run([str(BRIDGE), 'read', 'credentials/github.json'], input=second.stdout, capture_output=True, check=True)
+        self.assertEqual(base64.b64decode(json.loads(read.stdout)['selected']['base64']), b'{"fixture":2}')
+        for candidate, path, data in (
+            (original[:-1] + bytes([original[-1] ^ 1]), 'credentials/github.json', b'{}'),
+            (original, 'credentials/../escape.json', b'{}'),
+            (original, 'desired/profile.json', b'{}'),
+            (original, 'credentials/github.json', b'{"duplicate":1,"duplicate":2}'),
+            (original, 'credentials/github.json', b' ' * 65537),
+            (original + bytes(16 * 1024 * 1024), 'credentials/github.json', b'{}'),
+        ):
+            rejected = amend_bytes(candidate, path, data)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertEqual(rejected.stdout, b'')
+            self.assertEqual(rejected.stderr, b'VAULT_AMENDMENT_FAILED\n')
 
     def test_recovery_zip_rejects_extra_paths_before_extracting(self):
         bad = self.case / 'traversal.zip'

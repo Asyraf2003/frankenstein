@@ -130,6 +130,7 @@ public final class StorageInstrumentation extends Instrumentation {
                     }
                 }
                 if (count != 6) throw new AssertionError("Incomplete ciphertext backup");
+                GitHubStorageChecks.run(isolated, store, enrolled);
             } finally {
                 try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(enrollmentScratch.toPath())) {
                     for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator)
@@ -141,7 +142,7 @@ public final class StorageInstrumentation extends Instrumentation {
             try { vault.inspect(new ByteArrayInputStream(fixture), fixture.length, null); }
             catch (Exception expected) { rejected = true; }
             if (!rejected) throw new AssertionError("Native age accepted altered fixture");
-            result.putString("result", "PASS: AndroidKeyStore storage, tamper/final authentication, concurrent generation preservation, native phone enrollment and ciphertext-only recovery export");
+            result.putString("result", "PASS: AndroidKeyStore, native enrollment/amendment, ciphertext export, GitHub encrypted token rotation/journal recovery and replica refusal");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("result", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage());
