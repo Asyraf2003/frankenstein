@@ -1,9 +1,13 @@
 """Exercise real pacman update/rollback only in the disposable Arch test container."""
 import json
+from contextlib import nullcontext
+import importlib.util
 import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
+from unittest.mock import patch
 
 assert Path('/.dockerenv').is_file() and os.environ.get('FRANKENSTEIN_DISPOSABLE') == '1'
 sys.path.insert(0, '/usr/lib/frankenstein')
@@ -30,6 +34,20 @@ def fixture_stage(tag, destination):
     (destination / 'engine.json').write_text(json.dumps({'version': '0.2.1', 'commit': 'a' * 40, 'packages': packages}))
     return destination
 
+
+# The installer and updater select identical native package bytes. This fixture
+# replaces network/provenance staging only; it does not claim a public release.
+spec = importlib.util.spec_from_file_location('installer', Path(__file__).resolve().parents[1] / 'installer/install.py')
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix='native-stable-selection-') as temporary, \
+        patch.object(engine.releases, 'stage', fixture_stage), patch.object(engine.releases, 'owner_credentials', nullcontext):
+    selected = installer.select_engine('v0.2.1', False, temporary)
+    assert selected['source']['channel'] == 'stable'
+    assert selected['source']['commit'] == 'a' * 40
+    for name in selected['packages']:
+        assert engine.sha(selected['_directory'] / name) == engine.sha(Path('/engine-fixture/packaging') / name)
+print('NATIVE_INSTALLER_RELEASE_SELECTION=PASS package-metadata-and-bytes; remote-provenance-fixtured')
 
 target = manager.apply('v0.2.1', fixture_stage)
 assert set(manager.backend.installed()) == set(original)
